@@ -39,8 +39,10 @@ from .interception import (
 )
 
 
-_DEFAULT_IMAGE = ("ghcr.io/autowarefoundation/autoware@sha256:"
-                  "1db2988caa5dc5bae41548a8d556d0b57f55eb4dd63685426d94fd9c7a786034")
+DEFAULT_AUTOWARE_IMAGE = (
+    "ghcr.io/autowarefoundation/autoware@sha256:1db2988caa5dc5bae41548a8d556d0b57f55eb4dd63685426d94fd9c7a786034"
+)
+"""Pinned default image for hosted Autoware."""
 _DEFAULT_LAUNCH = {
     "vehicle_model": "sample_vehicle",
     "sensor_model": "awsim_sensor_kit",
@@ -88,7 +90,7 @@ class AutowareDrivingSystem:
     def __init__(
         self, *, gpu: int, ros_domain_id: int, autoware_data_directory: str | Path,
         assets_directory: str | Path, dds_directory: str | Path, work_directory: str | Path,
-        image: str = _DEFAULT_IMAGE,
+        image: str = DEFAULT_AUTOWARE_IMAGE,
         launch_arguments: Mapping[str, str | int | float | bool] | None = None,
         startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0,
         localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0,
@@ -763,3 +765,6 @@ class _AutowareSession:
         if not self._stopped:
             self._stopped = True
             self._process_group.close()
+
+
+__all__ = ["AutowareDrivingSystem", "DEFAULT_AUTOWARE_IMAGE"]

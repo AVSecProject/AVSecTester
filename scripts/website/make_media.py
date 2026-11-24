@@ -2,7 +2,7 @@
 
 Every subcommand reads one experiment output directory (the configured ``runs.output``) through
 the documented output layout ``runs/segment-<NNNNN>/seed-<S>/<treatment>/`` and the public
-``avsectester.runlog`` and ``avsectester.evaluation.visualization`` APIs; ``stop-line`` loads it
+``avsectester.runlog`` and ``avsectester.evaluation.visualization`` APIs. ``stop-line`` loads it
 with ``ExperimentResult`` from its configuration to read the saved stop line. Nothing is simulated
 or inferred again. Run it from the repository root, in the experiment environment
 (for example the ``nurec-experiment`` Compose service with ``--entrypoint python``), with
@@ -22,7 +22,7 @@ Regenerate the media of a run directory, for example:
         --attacked white_detector_pgd --name stop-line-approach
     python -m scripts.website.make_media still IMAGE --name evaluation-report
 
-Videos are H.264 MP4 files with a WebP poster; frames and screenshots are WebP, plots are PNG.
+Videos are H.264 MP4 files with a WebP poster. Frames and screenshots are WebP, and plots are PNG.
 Each command prints the written files and the decisions it used, for the media report.
 """
 
@@ -148,7 +148,9 @@ def write_video(frames: Sequence[np.ndarray], path: Path, fps: float, *, crf: in
     if not frames:
         raise ValueError("A video needs at least one frame")
     if len(frames) / fps > MAX_VIDEO_SECONDS:
-        raise ValueError(f"Video would last {len(frames) / fps:.1f} s; raise fps or select fewer decisions")
+        raise ValueError(
+            f"Video would last {len(frames) / fps:.1f} s. Raise fps or select fewer decisions"
+        )
     height, width = frames[0].shape[:2]
     if width > MAX_VIDEO_WIDTH:
         raise ValueError(f"Video width {width} exceeds {MAX_VIDEO_WIDTH} px")

@@ -201,13 +201,13 @@ class SensorView:
         if self.camera is None or self.cam_from_world is None:
             raise ValueError(f"Sensor {self.sensor!r} has no optical camera geometry")
         if self.object_occlusion != "geometry":
-            raise ValueError(f"Sensor {self.sensor!r} hides objects with {self.object_occlusion!r} occlusion; "
-                             "capture the view with the objects inserted and call plan_composite "
+            raise ValueError(f"Sensor {self.sensor!r} hides objects with {self.object_occlusion!r} occlusion. "
+                             "Capture the view with the objects inserted and call plan_composite "
                              "with its object_masks")
         objects = tuple(objects)
         present = sorted({placed.object_id for placed in objects} & self.objects.keys())
         if present:
-            raise ValueError(f"View already contains objects {present}; plan on a view captured without them")
+            raise ValueError(f"View already contains objects {present}. Plan on a view captured without them")
         return plan_composite(self.camera, self.cam_from_world, objects,
                               scene_depth=self.depth, occluders=self.actors,
                               occlusion_tolerance_m=self.occlusion_tolerance_m)
@@ -1123,8 +1123,8 @@ class SimulatorRuntime(_HookBindingMixin, ABC):
             raise RuntimeError("Reset the simulator before reading object visibility")
         if object_id not in self._capture_objects:
             if object_id in self._objects:
-                raise KeyError(f"Object {object_id!r} was inserted after the latest capture; "
-                               "it is visible from the next capture")
+                raise KeyError(f"Object {object_id!r} was inserted after the latest capture. "
+                               "It is visible from the next capture")
             raise KeyError(f"Unknown inserted object {object_id!r}")
         self._compose_capture()
         return deepcopy(self._object_visibility[object_id])

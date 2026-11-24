@@ -55,14 +55,6 @@ def test_estimate_vehicle_face_points():
         estimate_vehicle_face_points(box, calibration, np.zeros((5, 2)))
     with pytest.raises(TypeError, match="CameraCalibration"):
         estimate_vehicle_face_points(box, None, points)
-
-
-def test_estimate_vehicle_face_points_insufficient_points():
-    camera = PinholeCamera(np.array([[400., 0., 400.], [0., 400., 300.], [0., 0., 1.]]), 800, 600)
-    extrinsic = BODY_FROM_OPTICAL.copy()
-    extrinsic[:3, 3] = [2., .4, 1.5]
-    calibration = CameraCalibration(camera, extrinsic)
-    box = [300., 230., 500., 400.]
     with pytest.raises(ValueError, match="vehicle box region"):
         estimate_vehicle_face_points(box, calibration, np.tile([20., 0., 1.5], (4, 1)))
     separated = np.column_stack((np.arange(10., 60., 10.), np.full(5, .4), np.full(5, 1.5)))

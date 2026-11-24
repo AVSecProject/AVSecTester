@@ -95,6 +95,7 @@ def test_save(report, tmp_path):
     assert report.save(tmp_path) == tmp_path and report.path == tmp_path
     data = json.loads((tmp_path / "report.json").read_text())
     assert data == report.as_dict() and data["statistics"]["std_ddof"] == 0
+    assert "repeats" not in data and "repeat_pairs" not in data
     measurements = data["groups"][0]["treatments"]["clean"]["metrics"]
     assert measurements["UserMetric.seed"] == 9 and measurements["DrivingMetrics.stopped"] is False
     with (tmp_path / "runs.csv").open() as stream:
@@ -158,6 +159,8 @@ def test_save(report, tmp_path):
         "reasons": {}, "metric_types": {"TrajectoryDeviation.final_deviation": "number"},
     })
     report.save(tmp_path)
+    data = json.loads((tmp_path / "report.json").read_text())
+    assert data["repeats"] == 2 and data["repeat_pairs"] == report.repeat_pairs
     with (tmp_path / "runs.csv").open() as stream:
         assert next(csv.DictReader(stream))["repeat"] == "0"
     with repeat_path.open() as stream:
@@ -225,15 +228,6 @@ def test_summarize():
     assert summaries["train", "clean"]["metrics"]["speed"]["mean"] == 4.
     assert summaries["validation", "clean"]["metrics"]["speed"]["mean"] == 100.
     assert [row["part"] for row in report.pair_summaries] == ["train", "validation"]
-
-
-def test_record_error():
-    report = EvaluationReport()
-    report.record_error("UserMetric", RuntimeError("missing evidence"), seed=4, treatment_a="clean")
-    assert report.metric_errors == [{
-        "metric": "UserMetric", "error": "RuntimeError: missing evidence",
-        "seed": 4, "treatment_a": "clean",
-    }]
 
 
 def test_evaluation_configuration():

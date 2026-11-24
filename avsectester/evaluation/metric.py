@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import math
 from typing import Any, Literal, TypeAlias, TypeGuard
@@ -18,6 +18,11 @@ from avsectester.geometry.boxes import oriented_boxes_distance
 from avsectester.validation import (
     require_nonnegative_number, require_positive_integer, require_positive_number,
 )
+
+
+def _require_unique_metric_types(metrics: Sequence[Metric]) -> None:
+    if len({type(metric) for metric in metrics}) != len(metrics):
+        raise ValueError("evaluation.metrics must not repeat a metric type")
 
 
 DEFAULT_STOP_SPEED_MPS = 0.5

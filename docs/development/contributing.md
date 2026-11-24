@@ -66,6 +66,7 @@ document. Elsewhere use one sentence and a link.
 | Environments, metabuilder environments and sensor/hook randomness | [Experiment environments](../guides/environments.md) |
 | Datasets, semantic maps and `ScenarioStart` contents | [Datasets and semantic maps](../guides/datasets.md) |
 | Supplied configuration list and the impact-must-be-measured statement | [Supplied examples](../examples/README.md) |
+| Hosted Autoware setup examples, ROS hooks and actor relocation workflow | [Hosted Autoware](../examples/hosted-autoware.md) |
 | Supplied attack workflows and treatment names | [Stop-sign patch attack](../examples/stop-sign-patch.md), [Physical patch](../examples/physical-patch.md), [Image object insertion](../examples/image-insertion.md), [Vehicle insertion](../examples/vehicle-insertion.md), [Phantom injection](../examples/phantom-injection.md), [Speed-feedback attack](../examples/speed-feedback-attack.md) |
 | Implemented-attack directory rules | [Attack implementations](../../avsectester/implemented_attacks/README.md) |
 | Unfinished work and Not yet implemented targets | [TODO](TODO.md) |
@@ -103,8 +104,8 @@ signatures. Internal modules are implementation details.
 After changing a public docstring, follow the generator command in
 [Repository tools](../../scripts/README.md#api-reference-generation).
 
-The project site publishes docs/ unchanged under /docs/, except the TODO page, which stays on
-GitHub. Site links to it open it there. Every page must render correctly both on GitHub and on the
+The project site publishes `docs/` under `/docs/`. The TODO page stays on GitHub, and site links
+to it open on GitHub. Every published page must render correctly both on GitHub and on the
 site, so use only standard Markdown and GitHub tables. Do not use Material for MkDocs syntax such
 as admonitions or content tabs. Add every new docs page to `nav` in
 [website/mkdocs.yml](../../website/mkdocs.yml). The strict site build fails on omitted pages. To
@@ -112,7 +113,7 @@ preview the site, create a separate virtual environment, run
 `pip install -r website/requirements.txt` and then `mkdocs serve -f website/mkdocs.yml`. This is a
 documentation tool and runs outside the Compose experiment services.
 
-## Roadmap
+## Next steps
 
 [TODO](TODO.md) lists remaining capabilities.
 

@@ -277,9 +277,11 @@ def _odd(n: float) -> int:
 
 
 def _albumentations_builders() -> dict[str, tuple[str, Any]]:
-    """``name -> (category, build(severity))`` for the Albumentations-backed operators (imports A so the
-    builder lambdas capture it). Severity in ``[0, 1]`` maps to each transform's native parameters.
-    Parameter names target classic albumentations 1.4.x (this environment uses numpy<2)."""
+    """Map names to categories and Albumentations transform factories.
+
+    Each factory maps a severity in ``[0, 1]`` to the transform parameters. The parameter
+    names follow the Albumentations API used by the ``augment`` extra.
+    """
     import albumentations as A
 
     return {

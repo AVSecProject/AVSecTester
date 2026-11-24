@@ -51,7 +51,7 @@ def documentation_paths():
                     or ("/" not in pattern and fnmatch.fnmatch(name, pattern))
                     for pattern in patterns)]
             paths.extend(Path(directory) / name for name in files if name.endswith(".md"))
-    # The homepage in website/ links to site paths; mkdocs build --strict checks those links.
+    # The strict site build checks site paths used by the homepage.
     return sorted(path for path in paths if path.is_file()
                   and not excluded.intersection(path.relative_to(ROOT).parts)
                   and path.relative_to(ROOT).parts[0] != "website")
@@ -62,7 +62,8 @@ DOCS = documentation_paths()
 RUNNABLE = "<!-- runnable -->"
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)\)")
 HTML_IMAGE = re.compile(r"""<img[^>]+src=["']([^"']+)["']""", re.I)
-FENCE = re.compile(r"^(```+|~~~+)\s*([\w+-]*)")
+FENCE = re.compile(r"^ {0,3}(```+|~~~+)\s*([\w+-]*)")
+HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 
 
 def _blocks(text: str):
@@ -79,23 +80,25 @@ def _blocks(text: str):
         runnable = index > 0 and lines[index - 1].strip() == RUNNABLE
         start = index + 1
         index += 1
-        while index < len(lines) and not lines[index].startswith(fence):
+        while index < len(lines) and not lines[index].lstrip().startswith(fence):
             index += 1
         yield language, "\n".join(lines[start:index]), start + 1, runnable
         index += 1
 
 
 def _prose(text: str, *, inline_code: bool = False) -> str:
-    """Remove fenced blocks and inline code so only rendered Markdown remains."""
+    """Blank fenced lines and remove inline code so only rendered Markdown remains."""
     kept, fence = [], None
     for line in text.splitlines():
         match = FENCE.match(line)
         if fence is None and match:
             fence = match.group(1)
+            kept.append("")
             continue
         if fence is not None:
-            if line.startswith(fence):
+            if line.lstrip().startswith(fence):
                 fence = None
+            kept.append("")
             continue
         kept.append(line if inline_code else re.sub(r"`[^`]*`", "", line))
     return "\n".join(kept)
@@ -111,7 +114,7 @@ def _anchors(path: Path) -> set[str]:
     seen: dict[str, int] = {}
     anchors = set()
     for line in _prose(path.read_text(), inline_code=True).splitlines():
-        match = re.match(r"^#{1,6}\s+(.*?)\s*#*\s*$", line)
+        match = HEADING.match(line)
         if not match:
             continue
         slug = _slug(match.group(1))
@@ -138,7 +141,7 @@ def test_links_and_anchors_resolve(path):
             headings = [
                 _slug(match[1])
                 for line in _prose(resolved.read_text(), inline_code=True).splitlines()
-                if (match := re.match(r"^#{1,6}\s+(.*?)\s*#*\s*$", line))
+                if (match := HEADING.match(line))
             ]
             if headings.count(anchor) > 1:
                 broken.append(f"{target}: ambiguous repeated heading")
@@ -193,6 +196,13 @@ def test_runnable_marker_is_only_used_for_supported_languages():
     assert not unsupported, f"Runnable blocks must be Python or YAML: {unsupported}"
 
 
+@pytest.mark.parametrize("path", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_runnable_markers_are_adjacent(path):
+    text = path.read_text()
+    markers = sum(line.strip() == RUNNABLE for line in _prose(text).splitlines())
+    assert markers == sum(runnable for _, _, _, runnable in _blocks(text))
+
+
 @pytest.mark.parametrize("code", RUNNABLE_YAML_BLOCKS)
 def test_runnable_yaml_examples_load(code, tmp_path):
     from avsectester.experiment import load_configuration
@@ -215,10 +225,14 @@ def _import_module(name):
 
 def python_imports():
     for path in DOCS:
-        for language, code, line, runnable in _blocks(path.read_text()):
-            if language != "python" or runnable:
+        for language, code, line, _ in _blocks(path.read_text()):
+            if language != "python":
                 continue
-            for statement in ast.walk(ast.parse(code)):
+            try:
+                tree = ast.parse(code)
+            except SyntaxError:
+                continue
+            for statement in ast.walk(tree):
                 if isinstance(statement, ast.Import):
                     for alias in statement.names:
                         if alias.name.startswith("avsectester"):
@@ -244,6 +258,8 @@ def test_python_imports_resolve(module_name, name):
 def test_public_api_reference():
     generator = api_reference
     text = (ROOT / "docs/reference/python-api.md").read_text()
+    prose = _prose(text, inline_code=True)
+    assert "lambda:" not in prose and "&#124;" not in prose
     expected = generator.render(text)
     blocks = re.compile(r"<!-- api:begin module=(.*?) -->(.*?)<!-- api:end -->", re.S)
     actual_sections = dict(blocks.findall(text))
@@ -269,10 +285,27 @@ def test_public_api_reference():
 
 @pytest.mark.parametrize("path", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
 def test_documentation_format(path):
-    prose = _prose(path.read_text(), inline_code=True)
+    text = path.read_text()
+    source_lines = text.splitlines()
+    prose = _prose(text, inline_code=True)
     errors = []
     lines = prose.splitlines()
     for number, line in enumerate(lines, 1):
+        if len(line) > 100 and not line.lstrip().startswith(("|", "<!--")) and "://" not in line:
+            errors.append(f"{number}: prose line exceeds 100 characters")
+        heading = HEADING.match(line)
+        if heading and number > 1 and source_lines[number - 2].strip():
+            errors.append(f"{number}: heading must follow a blank line")
+        if heading and re.match(r"[a-z]", heading[1]) and not heading[1].startswith(
+            ("avsectester", "nuScenes", "ros_interception")
+        ):
+            errors.append(f"{number}: heading must begin with a capital letter")
+        if line.lstrip().startswith("|") and number < len(source_lines):
+            following = source_lines[number].strip()
+            if following and not following.startswith(("|", "<!--")):
+                errors.append(f"{number + 1}: missing blank line after table")
+        if re.match(r'^\s*(?:!!!|\?\?\?\+?|===\s+")', line):
+            errors.append(f"{number}: Material syntax")
         if re.search(r"`[^`]+`[ \t]+(?:\.\w|'s\b|=|-\w|[:),]|/(?! )|\((?![A-Za-z`\d][^)]*\)))", line):
             errors.append(f"{number}: separated code fragment: {line}")
         if any(re.search(r"&(?:#\d+|#x[\da-f]+|\w+);", code, re.I)
@@ -303,6 +336,22 @@ def test_documentation_format(path):
         if re.match(r"^> \*\*(?:Audience|Outcome):", first) and re.match(
                 r"^> \*\*(?:Outcome|Prerequisites):", second):
             errors.append("Task-header fields need a separate > line")
-    if path.name == "python-api.md":
-        assert "lambda:" not in prose and "&#124;" not in prose
+    area = path.parent.name
+    task_page = (area in {"getting-started", "guides"}
+                 or area == "examples" and path.name != "README.md")
+    if task_page and not re.match(
+        r"^# [^\n]+\n\n> \*\*Audience:\*\*.*?\n>\n> \*\*Outcome:\*\*.*?"
+        r"\n>\n> \*\*Prerequisites:\*\*", prose, re.S,
+    ):
+        errors.append("Task pages begin with Audience, Outcome and Prerequisites")
+    if area == "guides":
+        headings = [line for line in lines if line.startswith("## ")]
+        if not headings or headings[-1] != "## Next steps":
+            errors.append("Guides end with Next steps")
+    for paragraph in _prose(text).split("\n\n"):
+        if path.name != "contributing.md" and "**Not yet implemented.**" in paragraph and not any(
+            target.split("#", 1)[0].endswith("TODO.md") and "#" in target
+            for target in LINK.findall(paragraph)
+        ):
+            errors.append("Link Not yet implemented to a TODO heading")
     assert not errors, "\n".join(errors)

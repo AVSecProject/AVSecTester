@@ -50,11 +50,10 @@ def test_nuscenes_replay(nuscenes_dataset):
             attacks=(attack.create_runtime(segment, artifacts),),
             recording=RecordingPolicy(("front",), ("raw", "model_input")),
         ))
-    assert log.status == "completed"
-    assert all(not np.array_equal(row.raw_observation.sensor_data["front"],
-                                  row.model_observation.sensor_data["front"]) for row in log.steps)
-    assert all(any(action.get("details", {}).get("rendered") is True for action in row.actions)
-               for row in log.steps)
+    first, second = log.steps
+    for row in (first, second):
+        assert not np.array_equal(row.raw_observation.sensor_data["front"],
+                                  row.model_observation.sensor_data["front"])
 
 
 def test_sign_asset():

@@ -376,8 +376,8 @@ def optimize_patch(
         if options.scorer_id is None:
             candidates = [item for item in descriptions if "images" in item.differentiable_inputs]
             if len(candidates) != 1:
-                raise ValueError("Detector patch optimization requires exactly one differentiable image scorer; "
-                                 "set scorer_id explicitly when multiple scorers are available")
+                raise ValueError("Detector patch optimization requires exactly one differentiable image scorer. "
+                                 "Set scorer_id explicitly when multiple scorers are available")
             descriptor = candidates[0]
         else:
             descriptor = next((item for item in descriptions if item.id == options.scorer_id), None)

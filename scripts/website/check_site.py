@@ -2,12 +2,12 @@
 
 Usage: python -m scripts.website.check_site SITE_DIR
 
-Run after ``mkdocs build --strict -f website/mkdocs.yml``. The checks are:
+Run after ``mkdocs build --strict -f website/mkdocs.yml`` to verify these requirements.
 
-* every published Markdown file below docs/ has a page at its /docs/ URL, and repository-only
-  pages have none;
-* code in the Python API reference shows no table-escape backslash before ``|``;
-* every link to a repository file or directory on GitHub names a path that exists here.
+* Every published Markdown file below docs/ has a page at its /docs/ URL, and repository-only
+  pages have none.
+* Code in the Python API reference shows no table-escape backslash before ``|``.
+* Every link to a repository file or directory on GitHub names a path that exists here.
 """
 
 from __future__ import annotations

@@ -82,7 +82,8 @@ action receipts.
 
 `ScenarioView` provides the decision timeline, frame data, semantic map and preparation
 services. Use `record_reason()` to explain rejected candidates, and
-`session.can_start_at(position)` to check start requirements before returning a segment.
+a session from `scenario.services.session(scenario.seed)` to check
+`session.can_start_at(position)` before returning a segment.
 Placement and visibility criteria belong to the attack. The framework does not infer them
 from `user_data`.
 
@@ -111,7 +112,8 @@ assert [s.decision_steps for s in segments] == [20, 20, 20, 14]
 
 ## Offline phase
 
-A candidate rollout request is created from the chosen segment and deployment:
+Build a candidate request from the `OfflineContext` and the selected segment. Here, `self` is
+the attack and `artifacts` contains the candidate's prepared parameters.
 
 ```python
 from avsectester.execution.services import CandidateRequest
@@ -121,6 +123,8 @@ request = CandidateRequest(
     segment=segment, seed=context.seed, decision_steps=segment.decision_steps,
     environment=context.environment, recording=RecordingPolicy(),
     attack=self, artifacts=artifacts)
+with context.services.session(context.seed) as session:
+    log = session.rollout(request)
 ```
 
 Set `terminate_when` to a predicate on each recorded `StepRecord` to finish a candidate early
@@ -172,7 +176,7 @@ request records and capability checks are defined in the
 
 ## Online phase
 
-An online attack's `step` receives the raw frames ending exactly at the decision timestamp.
+Subscribe to `ResultSubscription("observation")` to read the input observation in `step`.
 Sensor-action timing and duration follow [Runtime](../reference/runtime.md#attack-actions).
 
 The deployment tick budget is the maximum of
@@ -191,10 +195,8 @@ replacement, and `AVStackAttackAction` for a driving-system stage value. The
 For insertion, `InsertObject` and `MoveObject` are world actions. `InsertionAttackAction` is a
 `SensorAttackAction`. Object coordinates use +X forward, +Y left and +Z up.
 
-`ActorRelocationAttack` validates the world-action path by instantly moving an existing
-non-ego actor to a fixed pose with zero velocity. See the
-[managed Autoware example](../examples/README.md) and
-[`SetActorState` receipts](../reference/runtime.md#runlog).
+Use `SetActorState` to set an existing actor's physical state. The supplied relocation
+workflow is described in [Hosted Autoware](../examples/hosted-autoware.md).
 
 Placement tools belong to `attack.insertion`, not the dataset. A `SensorView` supplies camera
 geometry, actor poses and available depth for sensor composition. See
@@ -203,11 +205,17 @@ geometry, actor poses and available depth for sensor composition. See
 
 ### Hosted Autoware messages
 
-In a hosted CARLA experiment, add `/sensing/imu/tamagawa/imu_raw` and `/planning/trajectory`
-to the driver's `modified_topics` for these actions. `SensorAttackAction.sensor` names the rig
-entry. `AVStackAttackAction.stage` names the original output topic. Return the actions from
-`AttackRuntime.step`. Both receive and return `RosMessage` objects. For read-only hooks, add
-the topic to `observed_topics`.
+In a hosted CARLA experiment, add `/sensing/imu/tamagawa/imu_raw` and `/planning/trajectory` to
+`simulator.options.external_driving_system.options.modified_topics` for these actions.
+`SensorAttackAction.sensor` names the rig entry. `AVStackAttackAction.stage` names the original
+output topic. Return the actions from `AttackRuntime.step`. Both receive and return `RosMessage`
+objects.
+
+Use `observed_topics` to subscribe passively. Read-only hooks receive observed messages, and
+RunLog can save their payloads. Attack runtimes do not receive observed messages, and neither
+`SensorAttackAction` nor `AVStackAttackAction` can target them. For duration rules see
+[Message stages](../reference/runtime.md#ros-message-stages), and for recording message contents see
+[Hosted Autoware](../examples/hosted-autoware.md).
 
 User callbacks run serially with message-stage hooks and actions. Time spent in a callback can
 delay messages waiting to be processed. See
@@ -229,7 +237,8 @@ class IncreaseImuUncertainty(SensorAttackAction):
 
 
 def stationary_trajectory(message, context):
-    points = [{**point, "longitudinal_velocity_mps": 0.0} for point in message.fields["points"]]
+    points = message.fields["points"].copy()
+    points["longitudinal_velocity_mps"] = 0.0
     return RosMessage(message.type, {**message.fields, "points": points})
 
 

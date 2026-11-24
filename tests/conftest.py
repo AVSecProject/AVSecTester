@@ -26,6 +26,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def make_detections():
+    pytest.importorskip("avstack")
     import numpy as np
     from avstack.datastructs import DataContainer
     from avstack.geometry import Attitude, Box3D, GlobalOrigin3D, Position
@@ -57,6 +58,7 @@ def make_detections():
 
 @pytest.fixture
 def make_ego():
+    pytest.importorskip("avstack")
     import numpy as np
     from avstack.environment.objects import VehicleState
     from avstack.geometry import Attitude, Box3D, GlobalOrigin3D, Position, Velocity

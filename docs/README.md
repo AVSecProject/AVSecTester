@@ -9,6 +9,7 @@ before extending the framework.
 | Goal | Reading path |
 |---|---|
 | Execute a supplied experiment | Quickstart → Examples → CLI |
+| Run CARLA with hosted Autoware | Installation → Hosted Autoware → Simulators |
 | Write an attack | Architecture → Attacks → Optimization |
 | Integrate a simulator | Simulators → Runtime → Python API |
 | Integrate a driving system | Driving systems → Runtime → Python API |
@@ -30,6 +31,7 @@ before extending the framework.
 | [Driving systems](guides/driving-systems.md) | Supplied stacks and custom stacks |
 | [Evaluation](guides/evaluation.md) | Metrics, groups, reports and plots |
 | [Defenses](guides/defenses.md) | Defense integration scope |
+| [Hosted Autoware](examples/hosted-autoware.md) | CARLA with native ROS 2 and topic processing |
 | [Examples](examples/README.md) | All supplied configurations |
 | [Configuration](reference/configuration.md) | YAML keys and defaults |
 | [CLI](reference/cli.md) | Commands, options, services and outputs |

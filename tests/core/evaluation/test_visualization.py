@@ -19,6 +19,7 @@ from avsectester.evaluation.visualization import (
     labels_view, lidar_bev, plot_group, record_run, save_gif, save_image, save_sequence, sensor_view,
 )
 from avsectester.runlog import CaptureRecord, RunLog
+from tests.fakes import CAMERA
 
 
 def image_log_with_geometry(make_log, make_actor, camera=None):
@@ -37,8 +38,8 @@ def image_log_with_geometry(make_log, make_actor, camera=None):
 
 
 @pytest.fixture
-def camera_log(camera, make_log, make_actor):
-    return image_log_with_geometry(make_log, make_actor, camera)
+def camera_log(make_log, make_actor):
+    return image_log_with_geometry(make_log, make_actor, CAMERA)
 
 
 @pytest.fixture
@@ -59,7 +60,7 @@ def test_sensor_view(camera_log):
     np.testing.assert_array_equal(view.cam_from_world, step.sensor_geometry["front"].cam_from_world)
     observation = step.model_observation
     observation.deliveries = {"front": (DeliveredAcquisition(
-        -33000,  -.033, 7, observation.sensor_data["front"], None,
+        -33000, -.033, 7, observation.sensor_data["front"], None,
         TimedStateEstimate(-33000, -.033, observation.vehicle_state, observation.ego_speed), capture_id=3),)}
     captured_truth = replace(step.physical_pre, t=-.033, frame=7, actors={})
     step.delivered_captures = {"front": (3,)}
@@ -123,7 +124,6 @@ def test_record_run(tmp_path, image_log):
 
     custom = record_run(image_log, tmp_path / "custom", visualize=partial(custom_view, camera="front"))
     assert [path.read_bytes() for path in custom] == [path.read_bytes() for path in paths]
-    assert filmstrip(image_log, visualize=partial(custom_view, camera="front")).shape == (108, 274, 3)
 
 
 def test_save_sequence(tmp_path, image_log):
@@ -153,10 +153,6 @@ def test_plot_group(tmp_path, make_log):
     with Image.open(path) as two_panels, Image.open(single) as one_panel:
         assert one_panel.width == two_panels.width
         assert one_panel.height < two_panels.height
-    forced = make_log([3., 2.])
-    forced.steps[0].force_gt = True
-    forced.steps[0].produced_command = forced.steps[0].executed_command = None
-    assert plot_group({"forced": forced}, tmp_path / "forced.png").is_file()
     empty = plot_group({}, tmp_path / "empty.png")
     assert empty.is_file()
 

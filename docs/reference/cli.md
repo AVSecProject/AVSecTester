@@ -45,8 +45,8 @@ preparation compatibility.
 | `--trafficsim-name NAME` | avsectester-trafficsim-PORT | Name of an automatically started traffic container |
 | `--service-timeout SECONDS` | 600 | Positive service startup timeout |
 
-A nonempty output directory is rejected without `--resume`. `--prepared` and `--resume` are
-mutually exclusive.
+The output path must be a directory. A nonempty directory requires `--resume`. `--prepared` and
+`--resume` are mutually exclusive.
 
 ### Preparation reuse
 
@@ -64,7 +64,9 @@ docker compose run --rm nurec-experiment run CONFIG.yaml --trafficsim-models mod
 
 `run` checks the configured NuRec renderer and traffic endpoints after configuration, output and
 preparation checks. A running service must contain every configured dataset scene. A compatible
-service is reused and left running. A scene mismatch is an error.
+service is reused and left running. A scene mismatch is an error. When `run` starts services, it
+uses their default images and an NRE cache size of two. Use the service commands to select an image
+explicitly.
 
 Missing services can start only on local endpoints: `127.0.0.1`, `localhost`, `0.0.0.0` or `::1`.
 Starting traffic requires `--trafficsim-models`. GPU selection uses the explicit service option
@@ -108,7 +110,9 @@ terminal summaries, statistics and unavailable values.
 
 ## NRE
 
-`nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600] [--dry-run]`
+```text
+nre serve CONFIG --gpu N [--name NAME] [--image IMAGE] [--cache-size 2] [--timeout 600] [--dry-run]
+```
 loads the configuration, starts Docker and waits for `Serving on`.
 
 | Option | Default |
@@ -145,7 +149,9 @@ dataset archives, then stops and removes that container. A missing container is 
 
 ## Trafficsim
 
-`trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600] [--dry-run]`
+```text
+trafficsim serve CONFIG --gpu N --models DIR [--name NAME] [--image IMAGE] [--timeout 600] [--dry-run]
+```
 requires `NuRecDataset` and a configured `AlpaSimTraffic` with a local endpoint.
 
 | Option | Default |
@@ -203,8 +209,9 @@ Checkpoint and retry behavior follow
   evaluation_report.html
 ```
 
-Repeated experiments add the [repeat directory level](../guides/experiments.md#repeating-treatments)
-and produce `evaluation/repeat_pair.csv` when the report contains repeat pairs.
+Repeated experiments add `repeat-R` between the seed and treatment directories and add
+`repeat: R` to run metadata, with zero-based repeat numbers. Single runs omit both.
+Repeated experiments write `evaluation/repeat_pair.csv` even when it has no data rows.
 
 Each attack directory holds the selected segments in `metadata.json`, its artifacts in
 `artifacts/` and its offline report in `offline_report/`. The `artifacts/` directory is created
@@ -213,8 +220,9 @@ phase moves its partial report to `incomplete_offline_reports/` before the phase
 Artifact filenames above describe the default trusted-pickle format. Attacks may override
 artifact persistence, and their files stay inside `artifacts/`. Segment numbers are global unit
 indexes. Each run directory contains
-`manifest.json`, published Parquet decision, event and acquisition parts, and payload shards in its
-[RunLog](runtime.md#runlog). Offline report content is described in
+`manifest.json`, published Parquet step, event and capture parts, and payload shards in its
+[RunLog](runtime.md#runlog). Runs with ROS topic processing also publish `messages/` parts.
+Offline report content is described in
 [Optimization](../guides/optimization.md), and evaluation content
 in [Evaluation](../guides/evaluation.md).
 
@@ -228,18 +236,15 @@ load artifacts for every completed attack.
 | Code | Meaning |
 |---|---|
 | 0 | Command completed without failed runs, selection errors or metric errors. This does not establish attack effectiveness |
-| 1 | Configuration load error, preparation load/validation error, selection, execution, result reading, metric evaluation or service startup/stop failed |
-| 2 | Invalid configuration or metadata contents, output conflict or incompatible saved preparation |
+| 1 | Unexpected configuration loading errors, preparation load or validation errors, selection, execution, result reading, metric evaluation or service startup/stop failed |
+| 2 | Invalid command usage, configuration or metadata contents, output conflict or incompatible saved preparation |
 | 130 | Keyboard interruption. Available partial output is retained |
 
 Service scene mismatch, a missing service at a nonlocal endpoint, absent `--trafficsim-models`
-and invalid GPU selection are configuration errors (exit 2). Container launch, readiness and
-explicit stop failures exit 1. Unsupported hook stages or incompatible commands fail the
-affected run at its start (exit 1). `evaluate` requires `prepared.json` and exits 1 if it is
-missing. With `--prepared` or `--resume`, the current hook `simulator.setup` ticks plus
-`Attack.deployment_ticks(segment)` must fit the saved deployment tick budget. Exceeding it
-fails execution with exit 1. See
-[saved-preparation compatibility](configuration.md#saved-preparation-compatibility).
+and invalid automatic GPU selection are configuration errors (exit 2). The explicit service
+commands pass `--gpu` to Docker, whose startup failures exit 1. Container readiness and
+explicit stop failures also exit 1. `evaluate` exits 1 if `prepared.json` is missing or if
+expected runs without manifests are marked incomplete.
 
 ## Supplied configurations
 

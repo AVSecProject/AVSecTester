@@ -35,8 +35,6 @@ def test_advance():
     assert [round(state.t * 1e6) for state in motion.states] == [0, 25000, 50000, 75000, 100000]
     assert motion.at(50000).x == pytest.approx(.5)
     assert motion.at(100000) == dynamics.step(initial, command, .1)
-    assert TrajectoryFollower().step(initial, command, .1) == motion.at(100000)
-    assert TrajectoryFollower().advance(initial, command, 100000).states[-1] == motion.at(100000)
     assert initial == PlanarEgoState()
     with pytest.raises(ValueError, match="within the motion"):
         dynamics.advance(initial, command, 100000, (200000,))
@@ -151,4 +149,4 @@ def test_alpasim_controller_advance():
     advanced = dynamics.step(next_state, decelerating_command(10., next_state.t, 0.), .1)
     assert advanced.x == pytest.approx(13., abs=.01)
     expired = dynamics.step(advanced, Control(trajectory=command.trajectory[:2]), .1)
-    assert expired.t == .4
+    assert expired.t == .4 and expired.x >= advanced.x

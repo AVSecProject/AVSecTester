@@ -17,8 +17,7 @@ from avsectester.geometry.lidars import LidarCalibration
 from tests.fakes import yolox_detection_model
 
 
-def test_rule_based_avstack(rule_based_observation, rule_based_detector):
-    observation = rule_based_observation()
+def test_rule_based_avstack_components(rule_based_detector):
     detector = rule_based_detector
     avstack = RuleBasedAVStack(detector, camera_id="front")
     assert avstack.detector is detector
@@ -35,6 +34,18 @@ def test_rule_based_avstack(rule_based_observation, rule_based_detector):
         RuleBasedAVStack(detector, object())
     with pytest.raises(TypeError, match="planner"):
         RuleBasedAVStack(detector, planner=object())
+    with pytest.raises(TypeError, match="vehicle_tracker"):
+        RuleBasedAVStack(detector, vehicle_tracker=object())
+    with pytest.raises(ValueError, match="vehicle_labels"):
+        RuleBasedAVStack(detector, vehicle_labels="car")
+    with pytest.raises(ValueError, match="lidar_id"):
+        RuleBasedAVStack(detector, lidar_id="")
+
+
+def test_rule_based_stop_signs(rule_based_observation, rule_based_detector):
+    observation = rule_based_observation()
+    detector = rule_based_detector
+    avstack = RuleBasedAVStack(detector, camera_id="front")
     try:
         avstack.reset(observation)
         assert avstack.component_log() is None
@@ -85,13 +96,8 @@ def test_rule_based_avstack(rule_based_observation, rule_based_detector):
     assert detector.model is None
 
 
-    with pytest.raises(TypeError, match="vehicle_tracker"):
-        RuleBasedAVStack(detector, vehicle_tracker=object())
-    with pytest.raises(ValueError, match="vehicle_labels"):
-        RuleBasedAVStack(detector, vehicle_labels="car")
-    with pytest.raises(ValueError, match="lidar_id"):
-        RuleBasedAVStack(detector, lidar_id="")
-
+def test_rule_based_vehicle_following(rule_based_observation):
+    observation = rule_based_observation()
     car, truck, stop = [0.] * 80, [0.] * 80, [0.] * 80
     car[2], truck[7], stop[11] = 1., 1., 1.
     predictions = [[50., 40., 40., 40., .9, *car],

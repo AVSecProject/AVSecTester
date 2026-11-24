@@ -18,6 +18,17 @@ if TYPE_CHECKING:
     from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 
 
+def _match_one_to_one(
+    costs: np.ndarray, eligible: np.ndarray, matches: dict[int, int], used: set[int],
+) -> None:
+    candidates = np.flatnonzero(eligible)
+    for pair in candidates[np.argsort(costs.flat[candidates], kind="stable")]:
+        track_index, measurement_index = divmod(int(pair), costs.shape[1])
+        if track_index not in matches and measurement_index not in used:
+            matches[track_index] = measurement_index
+            used.add(measurement_index)
+
+
 @dataclass(frozen=True)
 class SignTrack:
     """A stationary sign's ID, horizontal world position and 2×2 covariance."""
@@ -191,14 +202,9 @@ class VehicleTracker:
             (np.array([record.missed_updates == 0 for record in self._tracks], dtype=bool), low),
         )
         for available_tracks, available_measurements in stages:
-            eligible = np.flatnonzero(
-                (costs <= self.association_gate_chi2)
-                & available_tracks[:, None] & available_measurements[None, :])
-            for pair in eligible[np.argsort(costs.flat[eligible], kind="stable")]:
-                track_index, measurement_index = divmod(int(pair), len(measurements))
-                if track_index not in matches and measurement_index not in used_measurements:
-                    matches[track_index] = measurement_index
-                    used_measurements.add(measurement_index)
+            eligible = ((costs <= self.association_gate_chi2)
+                        & available_tracks[:, None] & available_measurements[None, :])
+            _match_one_to_one(costs, eligible, matches, used_measurements)
 
         updated = []
         for index, (record, (state, covariance)) in enumerate(zip(self._tracks, predictions)):
@@ -241,7 +247,7 @@ class StopSignTracker:
     fractional standard deviation of 0.3. Bearing updates use a default standard
     deviation of 0.007 rad. The default 0.3 m position floor prevents
     overconfidence and duplicate tracks. Signs are static, so there is no
-    process noise.
+    process noise. Tracks persist until reset, and bearing residuals wrap at ±π.
     """
 
     def __init__(
@@ -280,8 +286,9 @@ class StopSignTracker:
 
         camera_position_rig is the validated camera transform's translation.
         Only its horizontal coordinates and the vehicle's x, y and yaw are used.
-        Range initializes and associates tracks, but never updates their position
-        after association. Only the camera-to-sign bearing enters the EKF.
+        Measurements are associated one-to-one with tracks from before this update.
+        Range initializes tracks and contributes to association. Only the camera-to-sign
+        bearing updates a matched track's position.
         """
         try:
             pose = np.array([vehicle_state.x, vehicle_state.y, vehicle_state.yaw], dtype=float)
@@ -295,6 +302,7 @@ class StopSignTracker:
         cosine, sine = math.cos(pose[2]), math.sin(pose[2])
         rotation = np.array([[cosine, -sine], [sine, cosine]])
         camera_world = rotation @ camera[:2] + pose[:2]
+        measurements = []
         for point in sign_positions_rig:
             point = np.asarray(point, dtype=float)
             if point.shape != (3,) or not np.isfinite(point).all():
@@ -310,18 +318,20 @@ class StopSignTracker:
             lateral_sigma = math.hypot(self.bearing_sigma_rad * distance, self.min_position_sigma_m)
             measurement_covariance = (radial_sigma ** 2 * np.outer(direction, direction)
                                       + lateral_sigma ** 2 * np.outer(perpendicular, perpendicular))
-            associations = []
-            for track in self._tracks:
+            measurements.append((measurement, direction, measurement_covariance))
+
+        costs = np.zeros((len(self._tracks), len(measurements)))
+        for track_index, track in enumerate(self._tracks):
+            for index, (measurement, _, covariance) in enumerate(measurements):
                 residual = measurement - track.position
-                squared_distance = float(residual @ np.linalg.solve(
-                    track.covariance + measurement_covariance, residual))
-                associations.append(squared_distance)
-            if (not associations or min(associations)
-                    > self.max_association_mahalanobis_distance ** 2):
-                self._tracks.append(SignTrack(len(self._tracks), measurement, measurement_covariance))
-                continue
-            index = int(np.argmin(associations))
+                costs[track_index, index] = residual @ np.linalg.solve(
+                    track.covariance + covariance, residual)
+        matches: dict[int, int] = {}
+        used: set[int] = set()
+        _match_one_to_one(costs, costs <= self.max_association_mahalanobis_distance ** 2, matches, used)
+        for index, measurement_index in matches.items():
             track = self._tracks[index]
+            _, direction, _ = measurements[measurement_index]
             delta = track.position - camera_world
             rho = float(np.linalg.norm(delta))
             if rho < 1e-9:
@@ -341,6 +351,9 @@ class StopSignTracker:
             # Preserve symmetry against floating-point roundoff in the EKF update.
             covariance = (covariance + covariance.T) / 2
             self._tracks[index] = SignTrack(track.track_id, position, covariance)
+        for index, (position, _, covariance) in enumerate(measurements):
+            if index not in used:
+                self._tracks.append(SignTrack(len(self._tracks), position, covariance))
 
 
 __all__ = [

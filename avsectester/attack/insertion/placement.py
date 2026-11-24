@@ -97,7 +97,7 @@ def placement_from_spec(value: Any) -> AttachedPlacement | WorldPlacement:
                    for kind in (AttachedPlacement, WorldPlacement)}
         kind = value["type"]
         if not isinstance(kind, str) or kind not in classes:
-            raise ValueError(f"Unknown placement type {kind!r}; choose from {tuple(classes)}")
+            raise ValueError(f"Unknown placement type {kind!r}. Choose from {tuple(classes)}")
         options = value.get("options", {})
         if not isinstance(options, Mapping):
             raise TypeError("Placement options must be a mapping")

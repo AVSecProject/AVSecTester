@@ -13,7 +13,7 @@ from avsectester.experiment import (
 from avsectester.maps import ScenarioMap
 from avsectester.runlog import RunLog
 from tests.fakes import (
-    ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack, RepeatedRunMemorySimulator,
+    ConstantAVStack, MemoryDataset, MemorySimulator, MinimalAttack,
 )
 
 
@@ -68,11 +68,11 @@ def test_evaluate(tmp_path, segment, make_log):
     assert {p.name for p in (tmp_path / "evaluation/plots").glob("*.png")} == {
         f"segment-{index:05d}-seed-{seed}.png" for index in (0, 1) for seed in (0, 1)
     }
-    assert report.repeats == 1 and "repeats" not in report.as_dict()
+    assert report.repeats == 1
 
     repeated_output = tmp_path / "repeated"
     repeated_configuration = replace(
-        configuration, simulator=RepeatedRunMemorySimulator(),
+        configuration, simulator=MemorySimulator(can_repeat_runs=True),
         runs=replace(configuration.runs, repeats=2, output=repeated_output),
     )
     repeated = replace(result, runs=tuple(
@@ -89,7 +89,7 @@ def test_evaluate(tmp_path, segment, make_log):
         repeated_configuration, runs=replace(repeated_configuration.runs, output=None),
     )
     empty_report = evaluate(ExperimentResult(), repeated_without_output)
-    assert empty_report.as_dict()["repeats"] == 2 and empty_report.as_dict()["repeat_pairs"] == []
+    assert empty_report.repeats == 2 and not empty_report.repeat_pairs
 
     default_configuration = replace(
         configuration, runs=replace(configuration.runs, output=None), evaluation=EvaluationConfiguration())

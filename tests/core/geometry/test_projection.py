@@ -41,10 +41,18 @@ def test_project_box_follows_curved_edges():
     assert np.all(pixels >= bounds[:2])
     assert np.all(pixels <= bounds[2:])
 
-    # A windshield deflects the rays before the lens projects them; bounds follow the deflection.
+
+
+def windshield_camera():
     windshield = WindshieldDistortion((.05, 1., .1, 0., .2, 0.), (.03, 0., 0., 1., 0., .3),
                                       (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.))
-    deflected = FThetaCamera(100., 100., (0., 100.), 200, 200, (0., .01), max_angle=1.5, windshield=windshield)
+    return FThetaCamera(100., 100., (0., 100.), 200, 200, (0., .01), max_angle=1.5,
+                        windshield=windshield)
+
+
+def test_project_box_with_windshield():
+    deflected = windshield_camera()
+    pose = np.eye(4)
     pose[:3, 3] = (.3, -.2, 3.)
     bounds = np.asarray(project_box(deflected, np.eye(4), pose, (1., 1., 1.)))
     corners = np.array([(x, y, z) for x in (-.5, .5) for y in (-.5, .5) for z in (-.5, .5)]) + pose[:3, 3]
@@ -54,9 +62,12 @@ def test_project_box_follows_curved_edges():
     pixels = deflected.project(samples)
     assert np.all(pixels >= bounds[:2] - 1e-9) and np.all(pixels <= bounds[2:] + 1e-9)
     np.testing.assert_allclose(bounds, np.concatenate((pixels.min(axis=0), pixels.max(axis=0))), atol=.5)
-    # An offscreen box has no image bounds; a box crossing the camera plane can remain visible.
-    pose[:3, 3] = (-7.3, .6, .01)
-    assert project_box(camera, np.eye(4), pose, (4., 2., 1.5)) is None
+
+
+def test_project_box_crossing_the_camera_plane():
+    deflected = windshield_camera()
+    pose = np.eye(4)
+    fractions = np.linspace(0., 1., 1001)[:, None]
     centre, extent = (-2., .3, .5), (1.5, 1.5, 4.)
     pose[:3, 3] = centre
     bounds = project_box(deflected, np.eye(4), pose, extent)
@@ -71,8 +82,9 @@ def test_project_box_follows_curved_edges():
     assert len(pixels)
     lower, upper = np.asarray(bounds[:2]), np.asarray(bounds[2:])
     assert np.all(pixels >= lower - 1e-9) and np.all(pixels <= upper + 1e-9)
-    assert np.abs(np.r_[lower - pixels.min(axis=0), upper - pixels.max(axis=0)]).max() < 40.
+    assert lower[0] == 0. and upper[0] < deflected.cx
 
+    camera = FThetaCamera(100., 100., (0., 100.), 200, 200, (0., .01), max_angle=1.5)
     pose[:3, 3] = (-1.5, .1, 1.)
     bounds = project_box(camera, np.eye(4), pose, (1., 1., 3.))
     assert bounds is not None

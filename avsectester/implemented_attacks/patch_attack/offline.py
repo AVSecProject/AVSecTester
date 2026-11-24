@@ -101,7 +101,7 @@ def optimize_patch(attack, context, options: PatchOptimization):
     """Optimize selected metadata without selecting or validating its validity again.
 
     Image insertion uses calibrated ray sampling. Physical insertion samples the actual
-    self-emissive prop with native renders; the sampled native footprint is cached per origin.
+    self-emissive prop with native renders. The sampled native footprint is cached per origin.
     Optional rollout validation consumes the resulting logs and fails on incomplete runs.
     """
     from avsectester.attack.optimization import PGD

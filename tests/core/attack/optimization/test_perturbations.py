@@ -56,7 +56,7 @@ def test_patch_perturbation_matches_deployment(camera):
     optimized = perturbation.apply(AdversarialSample(x, TargetSpec((0, 0, 1, 1)),
                                                      {"plane_sampling": sampling, "mask": visible}),
                                    torch.as_tensor(texture[..., :3]).permute(2, 0, 1).float() / 255)
-    # Optimization and deployment use one sampler; only 8-bit quantization differs.
+    # Optimization and deployment use one sampler. Only 8-bit quantization differs.
     np.testing.assert_allclose(optimized.permute(1, 2, 0).detach().numpy() * 255, deployed, atol=1.5)
     delta.grad = None
     perturbation.apply(AdversarialSample(x, TargetSpec((0, 0, 1, 1)),

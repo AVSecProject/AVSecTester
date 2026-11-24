@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 import pytest
-import torch
 
 from avsectester.closed_loop.avstacks.implemented.modules import YOLOXDetector
 from avsectester.data_types import TargetSpec
@@ -15,13 +14,14 @@ from avsectester.rendering import STOP_SIGN_FACE, load_rgba_image
 
 
 def test_yolox_detector_gpu():
+    torch = pytest.importorskip("torch")
     weights = Path(os.environ.get("AVSECTESTER_YOLOX_WEIGHTS", "models/yolox_m.pth"))
     if not torch.cuda.is_available():
         pytest.skip("YOLOX live inference requires CUDA")
     if importlib.util.find_spec("yolox") is None:
         pytest.skip("YOLOX live inference requires the yolox package in the nurec image")
     if not weights.is_file():
-        pytest.skip(f"YOLOX weights are required at {weights}; set AVSECTESTER_YOLOX_WEIGHTS")
+        pytest.skip(f"Set AVSECTESTER_YOLOX_WEIGHTS to the local checkpoint, expected at {weights}")
     face = load_rgba_image(STOP_SIGN_FACE)
     height = 200
     width = round(face.shape[1] * height / face.shape[0])

@@ -25,7 +25,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_URL = "https://github.com/AVSecProject/AVSecTester"
 DOCS_PREFIX = "docs/"
 NO_EDIT_LINK = {"index.md", "docs/reference/python-api.md"}
-# docs/ pages kept on GitHub only; the site does not publish them and links to them go to GitHub.
+# These documentation pages are published only on GitHub.
 UNPUBLISHED_DOCS = frozenset({"docs/development/TODO.md"})
 
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -69,7 +69,7 @@ def _prose_lines(markdown: str, transform: Any) -> str:
 
 
 def repository_url(path: str, ref: str, *, directory: bool) -> str:
-    """GitHub URL of a repository path at ``ref``; directories use tree/, files blob/."""
+    """GitHub URL of a repository path at ``ref``. Directories use tree/ and files use blob/."""
     kind = "tree" if directory else "blob"
     return f"{REPOSITORY_URL}/{kind}/{ref}/{path}"
 
@@ -104,7 +104,7 @@ def rewrite_repository_links(
 def unescape_table_code_pipes(markdown: str) -> str:
     """Replace ``\\|`` with ``|`` inside code spans of table rows only.
 
-    GitHub needs the escape to keep a pipe in a table cell's code; Python-Markdown shows the
+    GitHub needs the escape to keep a pipe in a table cell's code. Python-Markdown shows the
     backslash literally and does not split cells at pipes inside code.
     """
     def row(line: str) -> str:

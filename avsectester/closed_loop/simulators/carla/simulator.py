@@ -605,7 +605,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             raise ValueError("The ego is controlled by the driving system")
         actors = self._native_resources()["actors"]
         if actor_id not in actors:
-            raise KeyError(f"Unknown CARLA actor {actor_id!r}; available: {sorted(actors)}")
+            raise KeyError(f"Unknown CARLA actor {actor_id!r}. Available: {sorted(actors)}")
         actor = actors[actor_id]
         self._recipe_replay.release(actor_id)
         import carla

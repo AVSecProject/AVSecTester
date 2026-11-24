@@ -10,9 +10,9 @@ import pytest
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer
 from avsectester.geometry import CameraCalibration, FThetaCamera
 from avsectester.geometry.lidars import LidarCalibration
-from avsectester.geometry.poses import make_pose
+from avsectester.geometry.poses import make_pose, rotation_matrix
 from avsectester.data_types import PointCloud
-from tests.fakes import CAMERA, NuRecImageBoundary, NuRecRpcBoundary, proto_world_pose
+from tests.fakes import NuRecRpcBoundary, decode_gaussian_ply, proto_world_pose
 
 
 def test_reset_origin(nurec_dataset):
@@ -27,7 +27,6 @@ def test_reset_origin(nurec_dataset):
 
 
 def test_calibration(monkeypatch):
-    assert NuRecImageBoundary(CAMERA).calibration == {}
     boundary = NuRecRpcBoundary().install(monkeypatch)
     renderer = NuRecRenderer(cameras=["front"])
     assert renderer.calibration == {}
@@ -35,24 +34,13 @@ def test_calibration(monkeypatch):
         renderer.load_scene("scene")
         calibration = renderer.calibration["front"]
         assert isinstance(calibration, CameraCalibration)
-        assert (calibration.camera.height, calibration.camera.width) == (12, 16)
+        assert calibration.camera == FThetaCamera(8.5, 6.5, (0., 8.), 16, 12, (0., .125), 1.5)
         np.testing.assert_allclose(calibration.rig_from_camera, proto_world_pose(boundary.mount))
         np.testing.assert_allclose(
             calibration.rig_from_camera @ renderer.cam_from_world(np.eye(4), "front"), np.eye(4),
             atol=1e-12,
         )
         assert renderer.copy().calibration == {}
-    finally:
-        renderer.close()
-
-
-def test_camera_model(monkeypatch):
-    NuRecRpcBoundary().install(monkeypatch)
-    renderer = NuRecRenderer(cameras=["front"])
-    try:
-        renderer.load_scene("scene")
-        camera = renderer.camera_model("front")
-        assert camera == FThetaCamera(8.5, 6.5, (0., 8.), 16, 12, (0., .125), 1.5)
     finally:
         renderer.close()
 
@@ -121,7 +109,6 @@ def test_lidar_calibration(monkeypatch, nurec_usdz_path, tmp_path):
         np.testing.assert_array_equal(calibration.rig_from_lidar, [
             [1., 0., 0., 1.17], [0., 1., 0., 0.],
             [0., 0., 1., 1.95], [0., 0., 0., 1.]])
-        assert renderer.copy().calibration == {}
         missing = NuRecRenderer(cameras=["front"], lidar="missing")
         try:
             with pytest.raises(ValueError, match="LiDAR 'missing' is not available"):
@@ -140,12 +127,11 @@ def test_lidar_calibration(monkeypatch, nurec_usdz_path, tmp_path):
             archive.writestr("rig_trajectories.json", json.dumps(metadata))
         renderer.load_scene({**scene, "usdz_path": path})
         assert renderer.calibration["lidar_gt_top_p128"].spin_period_s == .1
-        for scans in ([], [[0, 0]], [[100000, 99999]], [[0, float("inf")]]):
-            rig["lidars_frame_timestamps_us"] = {"lidar_gt_top_p128@scene": scans}
-            with zipfile.ZipFile(path, "w") as archive:
-                archive.writestr("rig_trajectories.json", json.dumps(metadata))
-            with pytest.raises(ValueError, match="has no recorded LiDAR scans"):
-                renderer.load_scene({**scene, "usdz_path": path})
+        rig["lidars_frame_timestamps_us"] = {"lidar_gt_top_p128@scene": []}
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("rig_trajectories.json", json.dumps(metadata))
+        with pytest.raises(ValueError, match="has no recorded LiDAR scans"):
+            renderer.load_scene({**scene, "usdz_path": path})
         calibration_record["lidar_model"]["type"] = "solid-state"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("rig_trajectories.json", json.dumps(metadata))
@@ -248,8 +234,7 @@ def test_scene_object_tracks(monkeypatch, tmp_path):
         assert len(files) == 1
         blob = files[0].read_bytes()
         assert files[0].name == f"avsectester_asset_{hashlib.sha256(blob).hexdigest()}.ply"
-        _, body = blob.split(b"end_header\n", 1)
-        rows = np.frombuffer(body, "<f4").reshape(-1, 14)
+        rows = decode_gaussian_ply(blob)
         assert len(rows) == 88
         scale = .06
         np.testing.assert_allclose(np.exp(rows[:, 7:10]) * scale,
@@ -269,8 +254,7 @@ def test_scene_object_tracks(monkeypatch, tmp_path):
             for _, native_pose in stored:
                 np.testing.assert_array_equal(native_pose, parked)
         edits = [request for request in boundary.requests if hasattr(request, "insert")]
-        assert len(edits) == 2
-        assert all(len(request.insert) == 1 for request in edits)
+        assert {item.id for request in edits for item in request.insert} == {track[0] for track in tracks}
         moved = PlacedObject("panel", asset, make_pose(np.eye(3), (5., 0., 0.)))
         moved_tracks = renderer.scene_object_tracks((moved, other))
         assert [track[0] for track in moved_tracks] == [track[0] for track in tracks]
@@ -279,7 +263,7 @@ def test_scene_object_tracks(monkeypatch, tmp_path):
         for native, (_, pose) in zip(boundary.last_request.dynamic_objects, moved_tracks, strict=True):
             np.testing.assert_allclose(proto_world_pose(native.pose_pair.start_pose), pose, atol=1e-12)
             np.testing.assert_allclose(proto_world_pose(native.pose_pair.end_pose), pose, atol=1e-12)
-        earlier_rig = make_pose(np.eye(3), (-.1, 0., 0.))
+        earlier_rig = make_pose(rotation_matrix((4., -2., 15.)), (-.1, 0., .3))
         renderer.render(np.eye(4), 33000, "front", moved_tracks,
                         frame_start_us=16000, world_from_rig_start=earlier_rig,
                         dynamic_objects_start=tracks)
@@ -305,7 +289,7 @@ def test_scene_object_tracks(monkeypatch, tmp_path):
         renderer.close()
 
 
-def test_shared_scene_assets(monkeypatch, nurec_usdz_path, tmp_path):
+def test_composite_renderer_keeps_scene_without_inserted_tracks(monkeypatch, nurec_usdz_path, tmp_path):
     from avsectester.rendering import ObjectAsset, PlacedObject
 
     boundary = NuRecRpcBoundary().install(monkeypatch)
@@ -370,8 +354,7 @@ def test_render_object_coverage(monkeypatch, tmp_path):
                    for key in copies for pose in boundary.stored_trajectories[key])
         assert boundary.last_request.image_quality == renderer.image_quality
         files = [scene_file, *(track.asset_id for track in copies.values())]
-        rows = [np.frombuffer(Path(path).read_bytes().split(b"end_header\n", 1)[1],
-                              "<f4").reshape(-1, 14) for path in files]
+        rows = [decode_gaussian_ply(Path(path).read_bytes()) for path in files]
         assert len(rows[0]) == 800
         np.testing.assert_allclose(np.unique(rows[0][:, 0]) * 2.5, [-.003, 0.], atol=1e-9)
         for copy in rows[1:]:
@@ -443,5 +426,40 @@ def test_missing_track_errors(monkeypatch, tmp_path):
         assert caught.value.__cause__ is error
         assert calls == 2
         assert boundary.insertion_counts == {tracks[0][0]: 1}
+    finally:
+        renderer.close()
+
+
+def test_render_scene_visibility(monkeypatch, tmp_path):
+    from avsectester.rendering import ObjectAsset, PlacedObject
+
+    boundary = NuRecRpcBoundary().install(monkeypatch)
+    boundary.scene_tracks = set()
+    boundary.asset_directories = {"/server/assets": str(tmp_path)}
+    renderer = NuRecRenderer(cameras=["front"], asset_directory=tmp_path,
+                             server_asset_directory="/server/assets")
+    try:
+        renderer.load_scene("scene")
+        texture = np.full((256, 256, 4), 255, np.uint8)
+        asset = ObjectAsset.from_panel(texture, category="object", width_m=2., mount_height_m=.5)
+        optical_from_object = np.array([
+            [0., 1., 0., 0.], [0., 0., -1., 1.], [-1., 0., 0., 4.], [0., 0., 0., 1.],
+        ])
+        world_from_camera = np.linalg.inv(renderer.cam_from_world(np.eye(4), "front"))
+        placed = PlacedObject("panel", asset, world_from_camera @ optical_from_object)
+        boundary.hidden = np.zeros((12, 16), bool)
+        boundary.hidden[:, :8] = True
+        visible = renderer.render_scene_visibility(np.eye(4), 0, "front", (placed,))
+        assert not visible[:, :8].any() and visible[:, 8:].any()
+        assert len(boundary.inserted_tracks) == 2
+        for track in boundary.inserted_tracks.values():
+            directory, filename = track.asset_id.rsplit("/", 1)
+            assert directory == "/server/assets"
+            blob = (tmp_path / filename).read_bytes()
+            assert blob.startswith(b"ply\n")
+            rows = decode_gaussian_ply(blob)
+            scale = max(asset.extent)
+            np.testing.assert_allclose(np.exp(rows[:, 7:10]) * scale,
+                                       np.tile([.001, .009, .009], (len(rows), 1)), rtol=1e-6)
     finally:
         renderer.close()

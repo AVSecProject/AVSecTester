@@ -79,9 +79,9 @@ class RecordingPolicy:
 class RunRequest:
     """One caller-owned simulator/driving-system run, independent of experiment orchestration.
 
-    ``terminate_when`` receives each completed decision and ends a successful run when true.
-    It sees the decision's contents before recording, except for unapplied message-action
-    receipts added when the interval closes. A handoff error still records the completed decision.
+    ``terminate_when`` receives a snapshot of each completed decision and ends a successful run
+    when true. The recorded step has the same contents, plus any unapplied message-action
+    receipts added at handoff. A handoff error preserves the completed step before failing.
     ``retain_steps`` and ``retain_sensor_data`` choose what the returned log keeps in memory,
     as in ``Recorder``. Setting either to False requires ``output_path``.
     """

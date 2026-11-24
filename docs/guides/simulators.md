@@ -9,8 +9,8 @@
 ## `Simulator` and simulator runtime
 
 A `Simulator` stores configuration and capability declarations. Each `create_runtime(seed)`
-creates a `SimulatorRuntime` whose creator closes its world and connections, including after
-failures. Import interfaces from `avsectester.closed_loop.simulators` and concrete
+creates a `SimulatorRuntime`. Call `close()` to release its world and connections, including
+after failures. Import interfaces from `avsectester.closed_loop.simulators` and concrete
 implementations from `simulators.carla`, `simulators.nurec` or `simulators.recorded`.
 
 `reset` initializes a selected `ScenarioStart` and captures its first observation.
@@ -142,15 +142,15 @@ timers by their configured durations for every run. See
 [CARLA runtime configuration](../reference/configuration.md#simulator).
 
 `Town10HD_Opt` has no map layers. A nonempty `map_layers` setting on it raises `ValueError`.
-The native adapter's ParkedVehicles unload request has no effect on this map, so its parked
-roadside vehicles remain in the scene. Layer settings are supported on `Town03_Opt`.
+On this map, `scenario.client.disable_static_actors` does not unload the ParkedVehicles
+layer. Parked roadside vehicles remain in the scene. Layer settings are supported on `Town03_Opt`.
 
-Native sensors use `sensor_tick=0` and produce packets on every physics tick. The scheduler retains
-only planned acquisitions, discarding packets from other ticks. A recipe sensor with a nonzero
-`sensor_tick` is rejected. Set acquisition rates with `runs.timing.sensors`. A spinning LiDAR packet
-covers one native physics interval. Reducing its acquisition frequency does not concatenate
-packets into a longer scan. Observations list sensors in the recipe's order, independently of
-packet arrival.
+The framework's `scenario.ego.sensors` use `sensor_tick=0` and produce packets on every physics
+tick. The scheduler retains only planned acquisitions, discarding packets from other ticks. A recipe
+sensor with a nonzero `sensor_tick` is rejected. Set acquisition rates with `runs.timing.sensors`. A
+spinning LiDAR packet covers one native physics interval. Reducing its acquisition frequency does
+not concatenate packets into a longer scan. Observations list sensors in the recipe's order,
+independently of packet arrival.
 
 Runtime methods accept a sensor's logical name or its native source ID.
 Unknown names and off-tick requests raise `ValueError` before changing state. Timing support is
@@ -170,9 +170,10 @@ A positive selected boundary needs materialized frame data. Recorded initializat
 preserves the selected actor identities and sensor timing. See [Experiments](experiments.md) for
 preparation and [Runtime](../reference/runtime.md) for decision order.
 
-Setting `depth_camera` selects an RGB camera for aligned depth and an undistorted pinhole lens.
-Other sensors keep their configured capture types. CARLA LiDAR retains native byte axes and its
-wrapper's `flipy` setting. See [LiDAR records](../reference/runtime.md#carla-lidar-data).
+Setting `depth_camera` selects one RGB camera for aligned depth and gives all stock RGB cameras
+undistorted pinhole lenses. Custom cameras keep their configured capture types. CARLA LiDAR retains
+native byte axes and its wrapper's `flipy` setting. See
+[LiDAR records](../reference/runtime.md#carla-lidar-data).
 
 ### Native ROS 2 control
 
@@ -184,13 +185,15 @@ independently of the framework's recording clocks. See
 
 Native ROS 2 runs start at the scene origin. Selection skips later starts and records the
 reason. When a run has a prepared initialization, its actual ego pose and velocity must
-match the prepared values. Starting after the origin is **Not yet implemented.** See
+match the prepared values.
+
+**Not yet implemented.** Starting after the origin. See
 [TODO](../development/TODO.md#native-ros-2-runs-after-the-origin).
 
-Enable external control output only for execution. Preparation and rendering can reset the
-world repeatedly. CARLA continues publishing ROS messages, so subscribers see clock jumps
-and new ego actors. A control mismatch during replay raises an error if an external client
-overrides the framework's command.
+Enable publication of external control commands only during execution. Preparation and rendering can
+reset the world repeatedly. CARLA continues publishing ROS messages, so subscribers see clock jumps
+and new ego actors. A control mismatch during replay raises an error if an external client overrides
+the framework's command.
 
 `realtime_factor` paces closed-loop ticks from the first hold tick onward. Preparation and
 rendering run without pacing. The official Autoware schedule lets ticks recover from short
@@ -201,18 +204,16 @@ collection records.
 Repeat runs with asynchronous driving systems and read treatment effects alongside within-treatment
 variation and [the noise floor](evaluation.md#reports-and-statistics).
 
-World actions and simulator world hooks can affect the external system. Hosted Autoware can
-also [observe or modify ROS topics](#managed-ros-topics). The runner rejects sensor
-environments and hooks on other non-world stages because changes to a framework observation do
-not reach native subscribers.
-Framework-composited `InsertObject` assets are unavailable during a native run. Native physical
-patch panels are supported. Offline selection and rendering can use sensor environments,
-sensor actions and framework-composited objects on their returned observations.
-Background traffic is managed on the external-system side. The framework is the only tick
-initiator. Other clients must not tick the world. See
-[ROS 2 server setup](../getting-started/installation.md#native-ros-2).
+World actions and simulator world hooks can affect the external system. Hosted Autoware can also
+[observe or modify ROS topics](#hosted-ros-topics). The runner rejects sensor environments and hooks
+on other non-world stages because changes to a framework observation do not reach native
+subscribers. Framework-composited `InsertObject` assets are unavailable during a native run.
+`PatchAttack` can place physical panels as native actors. Offline selection and rendering can use
+sensor environments, sensor actions and framework-composited objects on their returned observations.
+Recipes can include prescribed NPCs. The framework is the only tick initiator. Other clients must
+not tick the world. See [ROS 2 server setup](../getting-started/installation.md#native-ros-2).
 
-### Managed external driving systems
+### Hosted external driving systems
 
 In closed-loop runs, CARLA reloads the world and spawns the recipe's ROS rig before starting a
 new external driving session. Preparation and rendering spawn the same rig without starting
@@ -225,32 +226,41 @@ after each subsequent tick and stops it before destroying the sensor rig. See
 [runtime records](../reference/runtime.md#one-decision) for telemetry and event data.
 
 The [Town10HD example](../../configs/carla_autoware.yaml) hosts Autoware with native ROS 2.
-The managed system selects whether CARLA publishes TF. Autoware supplies its own TF, so CARLA
-publishes none. Unmanaged ROS 2 control uses CARLA's default TF publication.
+The hosted system selects whether CARLA publishes TF. Autoware publishes TF itself and
+disables CARLA's TF. ROS 2 control without a hosted system uses CARLA's default publication.
 The example uses the official sensor rig, camera profile, launch and CARLA overrides.
 Each run gets a fresh container and a new traffic-light source. Readiness waits for ADAPI,
 localization, pose agreement, clean distortion diagnostics, route acceptance and autonomous
 mode availability.
 Localization requests, pose checks and goal requests can retry. A goal is published again
-when no route follows it. Autonomous engagement uses one request once the session is ready.
+when no route follows it. The session requests autonomous mode once.
 Missing override files fail startup. The framework sets the traffic-light phase at the origin
 and keeps responsibility for pacing, actor control during setup and the run's decision limit.
-See [installation](../getting-started/installation.md#managed-autoware) and
-[configuration](../reference/configuration.md#managed-carla-driving-systems).
+Follow the [Hosted Autoware example](../examples/hosted-autoware.md) to run this setup.
 
-#### Managed ROS topics
+**Not yet implemented.** Hosted Autoware maps for other towns and camera fusion, including
+modification of camera topics. See
+[TODO](../development/TODO.md#apollo-and-autoware-driving-systems).
 
-During closed-loop execution, each entry in `modified_topics` has its producers publish to a
-private topic prefixed with `/avsectester/intercepted`. The forwarding process republishes the
-processed message on its original topic for every subscriber. Its topic data uses unicast to
-avoid fragmenting large multicast messages across the bridge. Before engagement, the process
-checks that the private topic has the expected producers and matching QoS, and that it is the
-public topic's sole publisher.
+#### Hosted ROS topics
 
-The observation process subscribes to the public topics listed in `observed_topics` using the
-container's DDS settings. The subscriptions use best-effort reliability, volatile durability
-and a keep-last queue that retains recent samples when processing falls behind. Existing
-publishers and subscribers keep their native data path.
+Observe ROS messages with `observed_topics`. The observation process subscribes to the public
+topics and leaves the existing data paths in place. Each topic must resolve to exactly one
+ROS type before startup completes. Observation uses best-effort reliability, volatile
+durability and a keep-last queue. Vehicle status, clock and `/sensing/gnss/pose` support
+observation only.
+
+Modify ROS messages with `modified_topics`. Each producer publishes to a private topic prefixed
+with `/avsectester/intercepted`. A separate forwarding process republishes results to the
+original topic for all subscribers. Before engagement, it checks that the private topic has
+the expected producers with matching QoS and that the public topic has a single publisher.
+
+An observed topic must have an absolute name. The two lists cannot share a topic. Both require
+`realtime_factor`. Use the original topic name as the hook stage. Observation hooks return the
+input object. Attacks can change only modifiable topics. Sensor actions use the matching
+`ros_rig` sensor name, one of `lidar_top`, `imu` or `gnss`. For configuration, hooks and
+`recording.topics`, see
+[Hosted Autoware](../examples/hosted-autoware.md#observe-modify-and-record-topics).
 
 The framework starts message processing after simulator reset and before the decision loop.
 Before that point, forwarded topics pass through unchanged and both processes count receipts
@@ -340,24 +350,10 @@ files there for NRE to read. See
 [Configuration](../reference/configuration.md#nurec-closed-loop-settings) for directory and mount
 settings.
 
-Plane assets use 5 mm grid spacing, capped at one Gaussian per texture pixel. Grid centers
-with alpha below 128 are omitted. Colors are alpha-weighted area averages. Gaussian
-lateral sizes are twice the grid-cell dimensions. The textured asset and its white and black
-coverage copies share their Gaussian geometry. Thickness is one millimeter and opacity logit
-is eight, with zeroth-order spherical harmonics only.
-
-Mesh triangles use the same grid spacing, and every nonzero-area triangle has at least one
-sample. Samples with alpha below 128 are omitted. The others become Gaussians that lie flat on
-their triangles and take their base colors. Their lateral sizes are twice the requested grid
-spacing. Textured colors are alpha-weighted averages over each Gaussian's texture footprint.
-Mesh assets have no nominal textures. See
-[mesh loading settings](../reference/configuration.md#mesh-assets) for file formats and axes.
-
-Composite visibility probes use a one-centimeter nearest-count grid, capped at one Gaussian
-per texture pixel. Their lateral sizes are nine tenths of the grid-cell dimensions. White and
-black probes share their Gaussian geometry. Because scene-asset Gaussians are wider than their
-grid cells, image edges are slightly soft and coverage extends slightly beyond the exact asset
-silhouette.
+Plane and mesh insertion convert surfaces and textures into scene Gaussians. The renderer's
+coverage probes use matching geometry with black and white appearances. Coverage may extend
+slightly beyond the asset's geometric silhouette. Mesh assets have no nominal textures.
+See [mesh loading](../reference/configuration.md#mesh-assets) for formats and axes.
 
 NRE registers one track for each object and texture. Moving an object reuses its track. Tracks
 remain until the NRE process restarts.
@@ -380,11 +376,8 @@ to them.
 Scene-inserted assets appear in LiDAR for 26.04 scenes. In 26.01 scenes, LiDAR can pass through
 inserted assets. This is a limitation of that scene release.
 
-LiDAR returns from scene-inserted assets can lie behind the asset surface. The offset is larger
-for surfaces near the ground and varies with the asset's position. NRE blends the Gaussians
-along each LiDAR ray in an approximate order, so large road Gaussians can add range from the
-road behind the asset. This is a limitation of NRE's LiDAR rendering and applies to plane and
-mesh assets.
+LiDAR returns from scene-inserted assets can lie behind their surfaces, especially near the
+ground. This affects plane and mesh assets.
 
 ### LiDAR
 
@@ -395,7 +388,7 @@ calibration. The calibrated spin period is the median duration of recorded LiDAR
 [LiDAR records](../reference/runtime.md#lidar-data) for the payload format.
 
 Each LiDAR scan covers `[frame_end_us - frame_interval_us, frame_end_us)`. Adjacent scans meet
-without gaps or overlap. The calibrated spin period is used only to validate `frame_interval_us` and
+without gaps or overlap. The calibrated spin period is used to validate `frame_interval_us` and
 must differ from it by at most 1%. It does not set the scan window. LiDAR does not accept
 `shutter_duration_us`.
 
@@ -412,8 +405,9 @@ cameras.
 
 Reconstructed-scene defects may produce a small number of below-ground points in a scan.
 
-Supplied scenes provide no intensity. Intensity and no-return-ray simulation are
-**Not yet implemented.** See
+Supplied scenes provide no intensity.
+
+**Not yet implemented.** Intensity and no-return-ray simulation. See
 [NuRec LiDAR simulation](../development/TODO.md#nurec-lidar-simulation).
 Inserted objects appear in LiDAR with [scene insertion](#scene-insertion). Composite insertion
 changes camera images only.
@@ -428,7 +422,7 @@ run origin. Pass `()` to read only the recorded pose without loading or renderin
 NuRec interpolates recorded ego and actor poses between dataset grid points. CARLA reads the
 requested captures and poses from its prescribed pre-roll. Reads return independent values
 without changing the live world, clock or capture, and reject insufficient source data.
-See the [recorded acquisition contract](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase)
+See the [acquisition contract](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase)
 for returned fields.
 
 The [recorded-input requirement](driving-systems.md#recorded-input-history) controls selection
@@ -441,26 +435,26 @@ follows [driving history](driving-systems.md#recorded-input-history).
 
 ### Navigation
 
-Map navigation matches the recorded ego path to driving lanes and extends the route through
-successors. Every capture projects the current physical ego origin onto that route and provides
-forward points in ego coordinates. Navigation expresses intent. It does not constrain the
-produced or executed command.
+With `route_generator: map`, navigation matches the recorded ego path to driving lanes and extends
+the route through successors. Every capture projects the current physical ego origin onto that route
+and provides forward points in ego coordinates. Navigation expresses intent. It does not constrain
+the produced or executed command.
 
-Recorded-route mode uses the recording without extension. Disabled navigation supplies no route.
+`route_generator: recorded` uses the recording without extension. `none` supplies no route.
 A map route needs driving lanes. Folded or inconsistent routes are rejected by `validate_start`
 so selection can record the reason. With loaded metadata, an invalid segment fails preparation.
 Algorithm parameters and constraints are in the [navigation API](../reference/python-api.md).
 
 ### Ground contact
 
-The runtime retains a three-dimensional ego pose. Ground contact fits the predicted box bottom
+With `physics_update_mode: ego_only`, ground contact fits the predicted box bottom
 to the selected scene mesh after each dynamics step. Rejected corrections retain the prediction.
 Termination events count failures by reason. Disabling physical updates retains the
 dynamics prediction.
 
-The full scene mesh may include roadside objects. A ground-only mesh avoids using those surfaces
-for ego contact where that asset is available. Ground contact is an approximate fit rather than
-a penetration solver. It does not correct traffic actors.
+The full scene mesh may include roadside objects. Use `ground_mesh: mesh_ground` to avoid those
+surfaces for ego contact where that asset is available. Ground contact is an approximate fit rather
+than a penetration solver. It does not correct traffic actors.
 
 ### Recorded motion
 
@@ -558,7 +552,7 @@ vehicles. Rendered probes instead measure the reconstruction's visibility direct
 
 ### Rendered-probe occlusion
 
-Opaque white and black probe copies measure whether scene content hides inserted surfaces. Only
+With `object_occlusion: rendered_probes`, white and black probes measure scene visibility. Only
 sufficiently opaque asset pixels contribute probes. The renderer requires `asset_directory`
 to be visible inside the NRE service. Path and mount rules are
 in [Configuration](../reference/configuration.md#nurec-closed-loop-settings).
@@ -582,7 +576,7 @@ world-object composition. It provides no traffic-light states. Environment suppo
 
 Subclass `Simulator` for configuration and `SimulatorRuntime` for native world operations.
 Declare supported datasets, commands and timing capabilities, then implement the native lifecycle
-hooks in the [simulator API contract](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase).
+hooks in the [simulator API](../reference/python-api.md#avsectesterclosed_loopsimulatorsbase).
 [Architecture](../concepts/architecture.md#world-ownership) defines world ownership and isolation.
 
 ## Next steps

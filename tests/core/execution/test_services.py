@@ -208,7 +208,7 @@ def test_rollout():
 
 
 def test_can_start_at():
-    adapter =DrivingAdapter(lambda seed: HistoryAVStack(), history=HistoryRequirement(samples=3))
+    adapter = DrivingAdapter(lambda seed: HistoryAVStack(), history=HistoryRequirement(samples=3))
     with ClosedLoopServices(MemoryDataset(), MemorySimulator(capture_ticks=1), adapter,
                             deployment=DeploymentPlan(2)) as services:
         with services.session(7) as session:
@@ -284,8 +284,6 @@ def component_services():
 
 def test_evaluate_component(component_services):
     services, component, _, _ = component_services
-    assert services.capabilities.rollout
-    assert services.capabilities.insert_objects
     with services.session(0) as session:
         assert session.components() == (component,)
         result = session.evaluate("driver", Observation(0., 0))

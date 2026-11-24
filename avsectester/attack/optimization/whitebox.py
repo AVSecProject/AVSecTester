@@ -32,7 +32,7 @@ class PGD(GradientOptimizer):
     Each epoch shuffles the samples with ``seed`` and keeps the final smaller batch. Images within
     a batch must have equal dimensions. ``tv_weight`` adds that weight times
     ``perturbation.smoothness(delta)`` to the loss, favoring smooth artifacts that survive printing
-    and camera sampling; history contains only the mean sample objective per epoch, without it.
+    and camera sampling. History contains only the mean sample objective per epoch, without it.
     ``verbose`` prints the objective every ``log_every`` epochs.
     """
 
@@ -65,7 +65,7 @@ class PGD(GradientOptimizer):
         monitor: Callable[[int, torch.Tensor], None] | None = None,
     ) -> OptimizationResult:
         if not scorer.differentiable:
-            raise ValueError("PGD needs a differentiable (white-box) scorer; use NES for black-box")
+            raise ValueError("PGD needs a differentiable (white-box) scorer. Use NES for black-box")
         if len(data) == 0:
             raise ValueError("PGD requires a nonempty data source")
         rng = np.random.default_rng(self.seed)

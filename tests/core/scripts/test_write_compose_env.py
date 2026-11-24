@@ -31,7 +31,7 @@ def test_write_compose_env(tmp_path):
     output = repository / ".env"
     entries = dict(line.split("=", 1) for line in output.read_text().splitlines())
     assert entries == {
-        "AVSECTESTER_ROOT": f"'{repository}'", "AVSECTESTER_UID": str(os.getuid()),
+        "AVSECTESTER_ROOT": f"'{repository.resolve()}'", "AVSECTESTER_UID": str(os.getuid()),
         "AVSECTESTER_GID": str(os.getgid()), "DOCKER_GID": "996",
         "DOCKER_CLI": f"'{docker}'", "CARLA_SERVER_GPU": "0",
         "CARLA_EXPERIMENT_GPU": "0", "NUREC_GPU": "0",

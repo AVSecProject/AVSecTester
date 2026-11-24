@@ -3,8 +3,8 @@
 Every image pixel averages ``SUBSAMPLES`` x ``SUBSAMPLES`` rays. Each ray reads a trilinear
 mipmap of the premultiplied RGBA texture at the level of its own footprint, so distant
 textures are filtered instead of aliased and every texel can receive a gradient. Rendering,
-visibility measurement and differentiable optimization call the same ``sample_texture``;
-only the texture tensor differs. A pixel belongs to a surface when its filtered coverage
+visibility measurement and differentiable optimization call the same ``sample_texture``.
+Only the texture tensor differs. A pixel belongs to a surface when its filtered coverage
 (premultiplied alpha) is positive, and its depth is the plane depth along the pixel's rays.
 """
 
@@ -179,7 +179,7 @@ def premultiplied_texture(rgba: np.ndarray) -> torch.Tensor:
 
 
 def _pyramid(texture: torch.Tensor) -> list[torch.Tensor]:
-    """Area-averaged levels down to one texel; differentiable with respect to the texture."""
+    """Area-averaged levels down to one texel. Differentiable with respect to the texture."""
     import torch.nn.functional as F
 
     levels = [texture]
@@ -193,7 +193,7 @@ def _pyramid(texture: torch.Tensor) -> list[torch.Tensor]:
 def sample_texture(texture: torch.Tensor, sampling: PlaneSampling) -> torch.Tensor:
     """Filtered premultiplied RGBA ``(4, H, W)`` of a ``(4, h, w)`` premultiplied texture.
 
-    The mean of the subpixel rays; each is a trilinear mipmap lookup at ``log2(rho) -
+    The mean of the subpixel rays. Each is a trilinear mipmap lookup at ``log2(rho) -
     log2(SUBSAMPLES)``, where ``rho`` is the pixel footprint in texels. Coverage is geometric:
     a ray outside the rectangle contributes nothing, and lookups clamp to the edge texels, so
     filtering never spreads a surface beyond its edges. Gradients reach every texel inside
@@ -304,7 +304,7 @@ def render_surfaces(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Image-sized uint8 RGBA and optical-axis depth of the nearest covering surface per pixel.
 
-    Covered pixels have finite depth; their alpha is the filtered coverage, so edges are
+    Covered pixels have finite depth. Their alpha is the filtered coverage, so edges are
     antialiased. The result does not depend on surface order.
     """
     nearest = np.full((camera.height, camera.width), np.inf)

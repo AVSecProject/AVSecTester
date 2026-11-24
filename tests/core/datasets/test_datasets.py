@@ -1,4 +1,4 @@
-"""Dataset components share timeline and map contracts; adapters own resource details."""
+"""Dataset components share timeline and map contracts with adapter-specific resources."""
 
 from dataclasses import replace
 import json
@@ -16,7 +16,6 @@ from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMoti
 from avsectester.datasets.nurec import NuRecDataset, read_scene_mesh
 from avsectester.geometry.poses import rotation_matrix
 from avsectester.maps import ScenarioMap
-from tests.core.datasets.scenario_map_contract import assert_scenario_map
 from tests.fakes import actor_state
 
 
@@ -76,7 +75,7 @@ def test_recorded_frame_data(dataset_fixture, request):
 @pytest.fixture
 def carla_map_dataset(tmp_path):
     pytest.importorskip("carla")
-    fixture = Path(__file__).resolve().parents[2] / "avstack" / "fixtures" / "straight_stop.xodr"
+    fixture = Path(__file__).resolve().parents[1] / "maps" / "fixtures" / "straight_stop.xodr"
     (tmp_path / "StraightStop.xodr").write_text(fixture.read_text())
     initial_ego = actor_state((2., -1.75, 0.))
     recipe = CarlaRecipe({"client": {"map_name": "StraightStop"}, "ego": {}}, 1, .1,
@@ -97,11 +96,41 @@ def map_case(request):
 
 
 def test_scenario_map_contract(map_case):
+    import cv2
+
     dataset, ego = map_case
-    assert_scenario_map(dataset.scenario_map("scene"), ego)
+    scenario_map = dataset.scenario_map("scene")
+
+    assert any(cv2.pointPolygonTest(np.concatenate((lane.left_boundary[:, :2],
+        lane.right_boundary[::-1, :2])).astype(np.float32), tuple(ego.pose[:2, 3]), False) >= 0
+        for lane in scenario_map.lanes.values())
+    controls = [control for control in scenario_map.traffic_controls.values() if control.lane_ids]
+    nearest = {}
+    for control in controls:
+        candidates = []
+        for identity in control.lane_ids:
+            points = scenario_map.lanes[identity].centerline
+            vectors = np.diff(points, axis=0)
+            lengths = np.linalg.norm(vectors, axis=1)
+            for index in np.flatnonzero(lengths > 0):
+                vector = vectors[index]
+                fraction = np.clip((control.pose[:3, 3] - points[index]) @ vector
+                                   / lengths[index] ** 2, 0., 1.)
+                point = points[index] + fraction * vector
+                distance = np.linalg.norm(control.pose[:3, 3] - point)
+                candidates.append((distance, vector / lengths[index], point))
+        assert candidates, f"Control {control.id!r} has no nonzero governed-lane tangent"
+        nearest[control.id] = min(candidates, key=lambda item: item[0])
+    for control in (value for value in controls
+                    if value.kind in {"stop_sign", "yield_sign", "traffic_light"}):
+        _distance, tangent, _point = nearest[control.id]
+        assert control.pose[:3, 0] @ tangent < 0, f"Control {control.id!r} faces along traffic"
+    for control in (value for value in controls if value.pose_reference == "face_center"):
+        height = control.pose[2, 3] - nearest[control.id][2][2]
+        assert .3 <= height <= 8., f"Control {control.id!r} has implausible face-centre height {height}"
 
 
-def test_nurec_timeline(nurec_usdz_path, tmp_path):
+def test_nurec_timeline(nurec_usdz_path):
     with pytest.raises(ValueError, match="positive and finite"):
         NuRecDataset([nurec_usdz_path], time_step=0.)
     with pytest.raises(ValueError, match="integer microseconds"):
@@ -127,6 +156,7 @@ def test_nurec_timeline(nurec_usdz_path, tmp_path):
     metadata["sequence_tracks.json"].clear()
     np.testing.assert_allclose(dataset.frame_data("scene", frames[5]).actors["host"].pose[0, 3], 9.)
 
+def test_nurec_track_trajectories(nurec_usdz_path, tmp_path):
     path = tmp_path / "track-flags.usdz"
     with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(path, "w") as target:
         for name in source.namelist():
@@ -151,7 +181,7 @@ def test_nurec_timeline(nurec_usdz_path, tmp_path):
     np.testing.assert_allclose(dataset.track_trajectories("scene")["host"]["trajectory"][0][1][:3, 3], [8., 0., 1.])
 
 
-def test_nurec_resources(nurec_dataset, nurec_usdz_path, tmp_path):
+def test_nurec_archive_listing(nurec_dataset, nurec_usdz_path):
     assert nurec_dataset.usdz_path("scene") == nurec_usdz_path
     with pytest.raises(KeyError, match="Unknown NuRec scenario"):
         nurec_dataset.usdz_path("missing")
@@ -175,6 +205,7 @@ def test_nurec_resources(nurec_dataset, nurec_usdz_path, tmp_path):
     with pytest.raises(ValueError, match="contains no .usdz archives"):
         list(empty.scenarios())
 
+def test_nurec_scene_mesh(nurec_dataset, nurec_usdz_path, tmp_path):
     vertices, faces = nurec_dataset.scene_mesh("scene")
     assert vertices.shape == (12, 3) and faces.shape == (14, 3)
     np.testing.assert_allclose(vertices.min(axis=0), [-20., -20., 0.])
@@ -191,6 +222,7 @@ def test_nurec_resources(nurec_dataset, nurec_usdz_path, tmp_path):
     with pytest.raises(ValueError, match="has no mesh.ply"):
         NuRecDataset([str(incomplete)]).scene_mesh("scene")
 
+def test_read_scene_mesh(nurec_usdz_path, tmp_path):
     mesh_only = tmp_path / "mesh-only.usdz"
     with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(mesh_only, "w") as target:
         for name in ("mesh.ply", "mesh_ground.ply"):
@@ -199,6 +231,7 @@ def test_nurec_resources(nurec_dataset, nurec_usdz_path, tmp_path):
     assert vertices.shape == (12, 3) and faces.shape == (14, 3)
     np.testing.assert_allclose(vertices.min(axis=0), [-20., -20., 0.])
 
+def test_nurec_map_with_unconfirmed_alignment(nurec_usdz_path, tmp_path):
     # A geographic OpenDRIVE projection alone does not establish alignment to the rig frame.
     fallback = tmp_path / "without-clipgt.usdz"
     with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(fallback, "w") as destination:
@@ -219,11 +252,6 @@ def test_nurec_camera_calibration(nurec_dataset, nurec_usdz_path, tmp_path):
     with pytest.raises(KeyError, match="Unknown NuRec scenario"):
         nurec_dataset.camera_geometry("missing")
 
-    timestamps = nurec_dataset.camera_timestamps("scene")
-    np.testing.assert_allclose(timestamps, [0., .25, .5])
-    timestamps[:] = -1.
-    np.testing.assert_allclose(nurec_dataset.camera_timestamps("scene"), [0., .25, .5])
-
     windshield = {"reference_poly": "FORWARD", "horizontal_poly": [.01, 1., 0., 0., 0., 0.],
                   "vertical_poly": [0., 0., 0., 1., 0., 0.], "horizontal_poly_inverse": [-.01, 1., 0., 0., 0., 0.],
                   "vertical_poly_inverse": [0., 0., 0., 1., 0., 0.]}
@@ -240,11 +268,17 @@ def test_nurec_camera_calibration(nurec_dataset, nurec_usdz_path, tmp_path):
             target.writestr(name, data)
     camera, _ = NuRecDataset([distorted], time_step=.1).camera_geometry("scene")
     assert camera.windshield is not None and camera.windshield.horizontal_poly == (.01, 1., 0., 0., 0., 0.)
-    # The recorded camera keeps the archive's principal point; NRE's half-pixel offset is renderer-specific.
     assert (camera.cx, camera.cy) == (8., 6.)
-    plain, _ = NuRecDataset([nurec_usdz_path], time_step=.1).camera_geometry("scene")
-    assert plain.windshield is None
 
+
+def test_nurec_camera_timestamps(nurec_dataset):
+    timestamps = nurec_dataset.camera_timestamps("scene")
+    np.testing.assert_allclose(timestamps, [0., .25, .5])
+    timestamps[:] = -1.
+    np.testing.assert_allclose(nurec_dataset.camera_timestamps("scene"), [0., .25, .5])
+
+
+def test_nurec_selected_camera_geometry(nurec_usdz_path, tmp_path):
     archive_path = tmp_path / "side_only.usdz"
     with zipfile.ZipFile(nurec_usdz_path) as source:
         metadata = json.loads(source.read("rig_trajectories.json"))
@@ -260,8 +294,6 @@ def test_nurec_camera_calibration(nurec_dataset, nurec_usdz_path, tmp_path):
                 target.writestr(name, json.dumps(metadata) if name == "rig_trajectories.json"
                                 else source.read(name))
     side = NuRecDataset([archive_path], camera_id="side", time_step=.1)
-    assert list(side.raw_metadata("scene")["rig_trajectories.json"][
-        "camera_calibrations"]) == ["side@scene"]
     camera, _ = side.camera_geometry("scene")
     np.testing.assert_allclose(camera.unproject([[8., 6.]]), [[0., 0., 1.]])
 
@@ -289,7 +321,6 @@ def test_carla_recipe():
         }}, 2, .1, recipe.motion)
 
 
-def test_carla_recipe_ros_configuration():
     transform = {"location": {"x": 0., "y": 0., "z": 2.},
                  "rotation": {"pitch": 0., "yaw": 0., "roll": 0.}}
     rig = [

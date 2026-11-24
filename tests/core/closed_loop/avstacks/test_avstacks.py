@@ -15,20 +15,20 @@ from avsectester.closed_loop.avstacks.driving_adapter import DrivingAdapter
 CASES = [
     pytest.param(SimpleNamespace(
         constructor=ExternalAVStack, options={}, fixtures={}, observation="camera_observation",
-        prepare=lambda request: None, component_keys=set(), no_components=True, nullable=set(),
+        prerequisites=(), component_keys=set(), no_components=True, nullable=set(),
         categories=(), no_detections=True, command_modes=frozenset(), command_type=type(None),
     ), id="externally-controlled"),
     pytest.param(SimpleNamespace(
         constructor=ModularAVStack, options={}, fixtures={"pipeline_cfg": "pipeline_config"},
         observation="native_observation",
-        prepare=lambda request: pytest.importorskip("avstack.config"),
+        prerequisites=("pipeline_config",),
         component_keys=set(), no_components=True, nullable=set(), categories=("Car",),
         no_detections=False, command_modes=frozenset({"actuator"}),
     ), id="modular"),
     pytest.param(SimpleNamespace(
         constructor=AlpamayoAVStack, options={"checkpoint_path": "synthetic-checkpoint",
             "camera_ids": ["front"], "device": "cpu"}, fixtures={}, observation="policy_observation",
-        prepare=lambda request: request.getfixturevalue("alpamayo_model_boundary"),
+        prerequisites=("alpamayo_model_boundary",),
         component_keys={"policy", "command", "route_waypoints", "navigation_command",
             "history_pose_count", "selected_image_times", "selected_capture_ids", "navigation_note"},
         no_components=False, nullable={"route_waypoints"}, categories=(), no_detections=True,
@@ -37,14 +37,14 @@ CASES = [
     pytest.param(SimpleNamespace(
         constructor=CameraForwardCollisionAVStack, options={}, fixtures={},
         observation="camera_observation",
-        prepare=lambda request: request.getfixturevalue("camera_detector_boundary"),
+        prerequisites=("camera_detector_boundary",),
         component_keys={"perception"}, no_components=False, nullable=set(), categories=(),
         no_detections=True, command_modes=frozenset({"actuator"}),
     ), id="camera-forward-collision"),
     pytest.param(SimpleNamespace(
         constructor=RuleBasedAVStack, options={"camera_id": "front"},
         fixtures={"detector": "rule_based_detector"}, observation="rule_based_observation",
-        prepare=lambda request: request.getfixturevalue("rule_based_detector_model"),
+        prerequisites=("rule_based_detector_model",),
         component_keys={"detections", "sign_estimates", "state", "target_track_id",
             "distance_to_stop_m", "acceleration_mps2", "planned_speed_mps", "braking", "tracks",
             "vehicle_detections", "vehicle_estimates", "vehicle_tracks", "skipped_vehicle_detections",
@@ -59,7 +59,8 @@ CASES = [
 
 @pytest.mark.parametrize("case", CASES)
 def test_avstack_contract(case, request):
-    case.prepare(request)
+    for prerequisite in case.prerequisites:
+        request.getfixturevalue(prerequisite)
     options = {**case.options, **{name: request.getfixturevalue(fixture)
                                  for name, fixture in case.fixtures.items()}}
     observation = request.getfixturevalue(case.observation)()

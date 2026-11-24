@@ -1,4 +1,4 @@
-"""AVStack-native phantom replacement at perception.post."""
+"""Append phantom detections at the avstack perception.post stage."""
 import numpy as np
 
 from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction

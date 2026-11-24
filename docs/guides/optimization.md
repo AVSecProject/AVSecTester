@@ -22,8 +22,9 @@ scenes, hosts or placement rules.
 `HideObject` minimizes a score. `SpoofObject` maximizes it. `HideBelowThreshold` minimizes only
 the part of a score above a decision threshold minus a margin, for targets where one detection
 decides the outcome. Objectives operate elementwise on score batches. Scores can be detector
-confidence or a physical quantity such as distance. An optional `monitor(index, delta)` observes
-the initial variable at index 0, then each completed PGD epoch or NES step. `PGD` requires a
+confidence or a physical quantity such as distance. Pass a `monitor` callback to see the
+initial variable at index 0, then each completed PGD epoch or NES step. The callback receives
+a tensor for PGD and a NumPy array for NES. `PGD` requires a
 differentiable score, while `NES` uses score queries. `PGD`'s `tv_weight` weights
 `Perturbation.smoothness`, which defaults to total variation of the whole variable. A perturbation
 that realizes only part of it overrides the method. A `SessionScorer` connects either path to a
@@ -72,7 +73,8 @@ must have equal dimensions. Random augmentations are redrawn in `DataSource.__ge
 `OptimizationResult.history` records each epoch's mean sample objective, excluding TV.
 
 `NES` uses `steps` because it optimizes one seeded dataset sample rather than traversing the
-dataset. It scores candidate perturbations in groups of at most `batch_size` per query.
+dataset. It scores candidate perturbations in groups of at most `batch_size` per query. Its
+history has `steps + 1` entries, starting with the loss before any update.
 
 ## Use a driving-system scorer
 
@@ -96,15 +98,16 @@ physical response.
 
 ## Optimize a world object's texture
 
-Capture a view with the object inserted and pass its camera, `cam_from_world` and
-`object_masks[object_id]` as `scene_visibility` to `plan_composite`. Composite candidate colors
-over a clean render of the same frame. This works for composite and scene insertion. With
-composite insertion, `SensorView.composition` also retains the background and plan of the
-capture. In geometry occlusion mode, a clean view can build a plan through `composite_plan`.
+Capture a view with the object inserted. Pass its camera, `cam_from_world`, the placed object
+sequence and `object_masks[object_id]` as `scene_visibility` to `plan_composite`. Composite
+candidate colors over a clean render of the same frame. This works for composite and scene
+insertion. With composite insertion, `SensorView.composition` also retains the background and plan
+of the capture. In geometry occlusion mode, a clean view can build a plan through `composite_plan`.
 The [Simulator guide](simulators.md#inserted-world-objects) describes these views.
 
-Plans fix object geometry, so gradients reach surface colors only. **Not yet implemented.**
-Shape optimization. See
+Plans fix object geometry, so gradients reach surface colors only.
+
+**Not yet implemented.** Shape optimization. See
 [TODO](../development/TODO.md#shape-optimization-of-inserted-objects).
 
 Differentiable harmonizers use the same floating-point computation during optimization and
@@ -164,9 +167,10 @@ live below `files/`.
 The offline HTML page expands tables with at most 20 rows and eight columns. Larger tables
 are collapsible.
 
-`context.report` collects measurements independently of returned artifacts. Each setter replaces
-an item with the same name and kind. Include units, descriptions and table-column explanations
-so the saved report is understandable without opening the implementation:
+`context.report` collects measurements independently of returned artifacts. Each setter replaces an
+item with the same name and kind. Names are shared across item kinds. Include units, descriptions
+and table-column explanations so the saved report is understandable without opening the
+implementation:
 
 ```python
 report = context.report
@@ -183,11 +187,11 @@ report.set_table(
 report.set_image("initial_texture", initial_texture, description="Initial texture.")
 ```
 
-Read structured entries through `report.values[name].value`, `report.tables[name].rows` and
-`report.images[name].pixels`. `report.directory` is the workspace for additional files. It is
-`None` for in-memory output. The
-[`OfflineReport` API](../reference/python-api.md#avsectesterattackoffline_report) defines
-supported values and name validation.
+Read structured entries through `report.values[name].value`, `report.series[name].y`,
+`report.tables[name].rows` and `report.images[name].pixels`. `report.directory` is the workspace for
+additional files. It is `None` for in-memory output. The
+[`OfflineReport` API](../reference/python-api.md#avsectesterattackoffline_report) defines supported
+values and name validation.
 
 The framework persists partial reports on failure and restores completed reports during resume.
 [Experiments](experiments.md) defines checkpoint behavior. The

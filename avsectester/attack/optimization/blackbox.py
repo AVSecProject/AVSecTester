@@ -1,6 +1,6 @@
 """Natural Evolution Strategies with batched candidate queries and deterministic sampling.
 
-Each query calls the perturbation and scorer; the algorithm has no rendering assumptions.
+Each query calls the perturbation and scorer. The algorithm has no rendering assumptions.
 """
 
 from __future__ import annotations

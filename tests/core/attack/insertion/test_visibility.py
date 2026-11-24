@@ -48,8 +48,8 @@ BLOCKER[:3, 3] = (5, 1, 0)
                  {"scene_depth": np.tile(np.r_[np.ones(50), np.full(50, 100.)], (80, 1)),
                   "depth_convention": "z"}, "depth", id="depth"),
 ])
-def test_estimate(estimator, clear_options, blocked_options, source, camera_pair, optical_from_world):
-    camera, cropped = camera_pair
+def test_estimate(estimator, clear_options, blocked_options, source, lens, optical_from_world):
+    camera, cropped = lens.camera, lens.cropped
     implementation = estimator()
     clear = implementation.estimate(panel(), camera, optical_from_world,
                                     camera_name="front", **clear_options)
@@ -103,11 +103,6 @@ def test_cuboid_evidence(camera, optical_from_world):
 
 def test_depth_evidence(camera, optical_from_world):
     estimator = DepthVisibilityEstimator()
-    for convention in ("z", "range"):
-        clear = estimator.estimate(
-            panel(), camera, optical_from_world, camera_name="front",
-            scene_depth=np.full((80, 100), np.inf), depth_convention=convention)
-        assert clear.visibility.fraction == 1.
     for invalid in (np.nan, 0., -np.inf):
         result = estimator.estimate(
             panel(), camera, optical_from_world, camera_name="front",

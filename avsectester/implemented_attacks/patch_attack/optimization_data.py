@@ -20,7 +20,7 @@ def native_sampling_grid(black, white):
     Captures share their frame, environment, alpha and deployment. A local black/white
     response distinguishes the prop from unchanged background colors, including vegetation.
     The digital surrogate stretches the texture over the footprint's image rectangle and
-    preserves the measured occlusion mask; it does not recover the native mesh's UV map.
+    preserves the measured occlusion mask. It does not recover the native mesh's UV map.
     """
     low, high = (np.asarray(image, dtype=np.float32) for image in (black, white))
     if (low.shape != high.shape or low.ndim != 3 or low.shape[-1] != 3

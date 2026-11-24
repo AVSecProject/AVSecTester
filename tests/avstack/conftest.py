@@ -37,8 +37,8 @@ SENSOR_CASES = [
 def native_sensor_case(request):
     """``(make_sensor, payload_array, attributes)`` for one native sensor type.
 
-    ``make_sensor(reference)`` builds the sensor mounted at ``reference``; ``payload_array``
-    selects the array inside its data; ``attributes`` are native fields a copy must keep.
+    ``make_sensor(reference)`` builds the sensor mounted at ``reference``. ``payload_array``
+    selects the array inside its data. ``attributes`` are native fields a copy must keep.
     """
     pytest.importorskip("avstack.config")
     from avstack import calibration, sensors

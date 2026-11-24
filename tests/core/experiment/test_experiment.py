@@ -24,7 +24,7 @@ from avsectester.experiment import (
 from avsectester.maps import ScenarioMap
 from tests.fakes import (
     CarlaNativeBoundary, ConstantAVStack, ExternallyControlledMemorySimulator, MemoryDataset, MemorySimulator,
-    MinimalAttack, MetadataOnlyAttack, RepeatedRunMemorySimulator,
+    MinimalAttack, MetadataOnlyAttack,
 )
 
 
@@ -152,8 +152,6 @@ def test_prepared_origin_references(tmp_path, monkeypatch, carla_dataset):
     result = Experiment.execute(PreparedExperiment.load(execution, output))
     assert [(run.seed, run.log.status) for run in result.runs] == [(0, "completed"), (17, "completed")]
 
-    # With an external controller publishing, a replay would fail first with its own error.
-    # The origin check failing instead shows that execution used the saved references.
     CarlaNativeBoundary(external_ego_throttle=.5).install(monkeypatch, None)
     with pytest.raises(RuntimeError, match="External controls before the CARLA run changed"):
         Experiment.execute(PreparedExperiment.load(execution, output))
@@ -316,7 +314,8 @@ def test_shared_deployment_budget():
     assert {name: [segment.start.position for segment in segments]
             for name, segments in prepared.metadata.items()} == {"fast": [0, 4], "slow": [0, 4]}
     fast_selection = next(row for row in prepared.selections if row.attack_name == "fast")
-    assert any("2" in reason and "deployment" in reason for reason in fast_selection.reasons)
+    assert any("insufficient recorded history or deployment window" in reason
+               for reason in fast_selection.reasons)
 
     # One attack may declare different budgets in different scenes. Its earlier scene
     # must still be checked against the experiment-wide maximum after all selection.
@@ -465,7 +464,7 @@ def test_repeated_runs(tmp_path):
     default = replace(configuration(MinimalAttack(max_segments=1), output=output, treatments=(
         TreatmentConfiguration("clean", environment={"world": {"weather": "clear"}}),
         TreatmentConfiguration("attacked", "probe", environment={"world": {"weather": "rain"}}),
-    )), simulator=RepeatedRunMemorySimulator(), hooks=HookSet((Hook("simulator.setup", record_start),)))
+    )), simulator=MemorySimulator(can_repeat_runs=True), hooks=HookSet((Hook("simulator.setup", record_start),)))
     Experiment.prepare(default)
     preparation = (output / "prepared.json").read_bytes()
     config = replace(default, runs=replace(default.runs, repeats=2))
@@ -497,12 +496,16 @@ def test_repeated_runs(tmp_path):
 
     extra = root / "repeat-2" / "clean"
     copytree(root / "repeat-1" / "clean", extra)
-    copytree(root / "repeat-1" / "clean", root / "repeat-01" / "clean")
+    invalid_name = root / "repeat-01" / "clean"
+    copytree(root / "repeat-1" / "clean", invalid_name)
     loaded = ExperimentResult.load(output, config)
     assert [(run.group, run.treatment) for run in loaded.runs] == [
         (run.group, run.treatment) for run in result.runs
     ]
-    assert loaded.notices == (f"Skipping saved run that the saved preparation does not expect: {extra}",)
+    assert loaded.notices == (
+        f"Skipping saved run with invalid directory name: {invalid_name}",
+        f"Skipping saved run that the saved preparation does not expect: {extra}",
+    )
     assert not loaded.failures
 
 
@@ -620,7 +623,7 @@ def test_offline_reports(tmp_path):
                for note in caught.value.__notes__)
 
 
-def test_metadata(tmp_path):
+def test_prepare_with_external_metadata(tmp_path):
     path = tmp_path / "metadata.json"
     original = configuration(MinimalAttack(), output=tmp_path / "selected")
     original = replace(original, metadata=MetadataConfiguration(save=path))

@@ -242,7 +242,7 @@ def test_plan_composite_harmonizers(camera, optical_from_world):
         (clamped * 255).round().to(torch.uint8).permute(1, 2, 0).numpy())
 
     # A nominal texture fixes the harmonizer's statistics, so editing part of the texture leaves
-    # the rest of the object unchanged; without one, the edit changes the whole object's gain.
+    # the rest of the object unchanged. Without one, the edit changes the whole object's gain.
     edited = texture.copy()
     edited[6:, :, :3] = 255
     edited_colors = torch.as_tensor(edited[..., :3], dtype=torch.float32).permute(2, 0, 1) / 255

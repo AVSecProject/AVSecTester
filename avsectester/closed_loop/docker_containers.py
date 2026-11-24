@@ -74,7 +74,7 @@ def remove_exited_container(name: str) -> bool:
 
 
 def _failed_start(error: BaseException, name: str, identity: str | None) -> NoReturn:
-    logs = "No container owned by this invocation; no container was stopped."
+    logs = "This invocation owned no container to stop."
     if identity is not None:
         try:
             response = _docker(["logs", "--tail", "50", identity])
@@ -104,7 +104,7 @@ def launch_container(command: list[str], name: str, *,
     """
     _require_docker()
     if _docker(["inspect", name]).returncode == 0:
-        raise RuntimeError(f"Container already exists: {name}; choose --name or stop it explicitly.")
+        raise RuntimeError(f"Container already exists: {name}. Choose --name or stop it explicitly.")
     if prepare is not None:
         prepare()
     owner = uuid.uuid4().hex

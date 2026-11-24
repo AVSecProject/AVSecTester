@@ -1,6 +1,5 @@
 """Tiny datasets, recorded worlds and geometry shared by public API tests."""
 import json
-import math
 import zipfile
 
 import numpy as np
@@ -8,8 +7,9 @@ import pytest
 
 from avsectester.datasets import FrameReference
 from avsectester.datasets.nurec import NuRecDataset
-from avsectester.data_types import ActorState, Control, WorldSnapshot
+from avsectester.data_types import Control, WorldSnapshot
 from avsectester.runlog import RunLog, StepRecord
+from tests.fakes import actor_state
 
 
 @pytest.fixture
@@ -67,7 +67,6 @@ def nuscenes_dataset(nuscenes_root):
 
 @pytest.fixture
 def carla_dataset():
-    from avsectester.data_types import Control
     from avsectester.datasets.carla import CarlaDataset, CarlaRecipe, PrescribedMotion
 
     recipe = CarlaRecipe({"client": {"map_name": "Town03_Opt"}, "ego": {
@@ -78,7 +77,6 @@ def carla_dataset():
 
 @pytest.fixture
 def nurec_dataset(nurec_usdz_path):
-    from avsectester.datasets.nurec import NuRecDataset
     return NuRecDataset([nurec_usdz_path], time_step=.1)
 
 
@@ -101,11 +99,7 @@ def make_object_in_front():
 @pytest.fixture
 def make_actor():
     def actor(x=0., y=0., *, z=0., yaw=0., extent=(4., 2., 2.), category="car"):
-        pose = np.eye(4)
-        cosine, sine = math.cos(yaw), math.sin(yaw)
-        pose[:2, :2] = [[cosine, -sine], [sine, cosine]]
-        pose[:3, 3] = [x, y, z]
-        return ActorState(pose, (0., 0., 0.), category, extent)
+        return actor_state((x, y, z), yaw=yaw, extent=extent, category=category)
     return actor
 
 
@@ -306,10 +300,11 @@ def lens(request):
     """One lens family, with explicit ordinary, cropped and miniature calibrations."""
     from types import SimpleNamespace
     from avsectester.geometry.cameras import FThetaCamera, PinholeCamera
+    from tests.fakes import CAMERA
 
     if request.param == "pinhole":
         return SimpleNamespace(
-            camera=PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80),
+            camera=CAMERA,
             cropped=PinholeCamera(np.array([[50., 0., 0.], [0., 50., 40.], [0., 0., 1.]]), 100, 80),
             tiny=PinholeCamera(np.array([[1., 0., 1.], [0., 1., 1.], [0., 0., 1.]]), 2, 2),
             offset=10., tiny_offset=1 / 3,
@@ -328,16 +323,12 @@ def camera(lens):
 
 
 @pytest.fixture
-def camera_pair(lens):
-    return lens.camera, lens.cropped
-
-
-@pytest.fixture
 def tiny_camera(lens):
     return lens.tiny
 
 
 @pytest.fixture
 def optical_from_world():
-    return np.array([[0., -1., 0., 0.], [0., 0., -1., 0.],
-                     [1., 0., 0., 0.], [0., 0., 0., 1.]])
+    from tests.fakes import CAM_FROM_WORLD
+
+    return CAM_FROM_WORLD.copy()

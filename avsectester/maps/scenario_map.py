@@ -139,7 +139,7 @@ class StopLine:
 class ScenarioMap:
     """Semantic layers in canonical right-handed world axes, with explicit missing-layer reasons.
 
-    drivable_area polygons represent their set union; they need not be dissolved or disjoint.
+    drivable_area polygons represent their set union. They need not be dissolved or disjoint.
     Each crosswalks or intersections polygon is one crosswalk or intersection. Mapping inputs
     are copied, and every geometric array is an independent read-only copy.
     """
@@ -169,7 +169,7 @@ class ScenarioMap:
         for name, reason in unavailable.items():
             _identity(name, "layer name")
             if name not in _UNAVAILABLE_KEYS:
-                raise ValueError(f"Unsupported unavailable-layer key {name!r}; use a ScenarioMap "
+                raise ValueError(f"Unsupported unavailable-layer key {name!r}. Use a ScenarioMap "
                                  "layer, or layer.partial, layer.<record field> or "
                                  "traffic_controls.<kind>")
             _identity(reason, "unavailable-layer reason")

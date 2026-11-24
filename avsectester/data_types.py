@@ -229,8 +229,10 @@ class Observation:
             raise KeyError(f"Unknown observation sensor: {sensor_id!r}")
         payload = self.sensor_data[sensor_id]
         if hasattr(payload, "calibration"):
-            payload.calibration = calibration
-        self.calibration[sensor_id] = calibration
+            replacement = copy.copy(payload)
+            replacement.calibration = calibration
+            self.sensor_data = {**self.sensor_data, sensor_id: replacement}
+        self.calibration = {**self.calibration, sensor_id: calibration}
 
 
 def without_sensor_payloads(observation: Observation, *, keep_sensor_ids: Iterable[str] = (),

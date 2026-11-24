@@ -36,10 +36,16 @@ class RuleBasedAVStack(AVStack):
     stop targets with constant required deceleration. No ground-truth sign
     positions are used. Only NuRec observations currently supply the required
     CameraCalibration. Detector, tracker and planner are supplied as components.
+    With map navigation, the planner follows the centerline without choosing lane changes.
 
     Supplying ``vehicle_tracker`` enables camera detection with LiDAR vehicle ranging.
     The selected LiDAR must supply a PointCloud and LidarCalibration. Visible-face measurements
     feed the tracker's two-stage score association and constant-velocity Kalman filter.
+    With a vehicle tracker, detection uses
+    ``min(detector.score_threshold, vehicle_tracker.low_score_threshold)``. Stop signs and the
+    bound scorer's ``decision_threshold`` use the configured ``detector.score_threshold``.
+    A vehicle detection with too few LiDAR points for ranging is skipped and counted in
+    ``skipped_vehicle_detections``.
     Without a vehicle tracker, vehicle detections are ignored and LiDAR is not read.
     """
 
@@ -86,8 +92,8 @@ class RuleBasedAVStack(AVStack):
         calibration = observation.calibration.get(self.camera_id)
         if not isinstance(calibration, CameraCalibration):
             raise ValueError(
-                f"RuleBasedAVStack requires CameraCalibration for camera {self.camera_id!r}; "
-                "currently only NuRec observations provide this calibration."
+                f"RuleBasedAVStack requires CameraCalibration for camera {self.camera_id!r}. "
+                "Only NuRec observations provide this calibration."
             )
         return calibration
 

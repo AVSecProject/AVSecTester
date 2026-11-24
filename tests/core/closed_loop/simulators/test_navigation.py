@@ -25,7 +25,7 @@ def test_map_route():
 
     with pytest.raises(ValueError, match="more than 10 m"):
         RouteGenerator("map", [[0, 20, 0], [1, 20, 0]], ScenarioMap(lanes={road.id: road}))
-    with pytest.raises(ValueError, match="choose route_generator='recorded' or 'none'"):
+    with pytest.raises(ValueError, match="Choose route_generator='recorded' or 'none'"):
         RouteGenerator("map", [[0, 0, 0], [1, 0, 0]], Unavailable("no map"))
 
 

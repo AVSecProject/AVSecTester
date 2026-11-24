@@ -174,7 +174,7 @@ class PatchWorldAttackAction(WorldAttackAction):
         if self.insertion.orientation.mode != "follow_host":
             raise ValueError("CARLA physical patches require follow_host orientation")
         # Compose entirely in actor-local coordinates. The actor origin is not the box
-        # centre. Selecting and optimizing the plane use this same local box offset.
+        # center. Selecting and optimizing the plane use this same local box offset.
         box_rotation = rotation_matrix(host.box_rotation)
         position = np.asarray(host.box_center) + box_rotation @ placement.local_position(host.extent)
         rotation = box_rotation @ rotation_matrix(self.insertion.orientation.rotation_deg)

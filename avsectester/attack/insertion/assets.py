@@ -1,7 +1,8 @@
 """Explicit insertion geometry, independent of a simulator or attack implementation.
 
 World and actor frames use meters and right-handed x-forward, y-left, z-up axes. An actor
-pose identifies its origin; box_transform() locates its bounding-box center. Assets use the same axes, with their front along +X.
+pose identifies its origin. ``box_transform()`` locates its bounding-box center. Assets use
+the same axes, with their front along +X.
 Placement determines position, while orientation independently determines rotation.
 """
 

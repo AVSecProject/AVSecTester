@@ -16,9 +16,10 @@ def box_ray_distances(
 ) -> np.ndarray:
     """Ray/slab intersection distances in meters along camera-frame unit rays.
 
-    ``extent`` is the full box size, and ``world_from_box`` locates its center.
-    A ray starting inside the box reaches its exit face. Misses and boxes with
-    a zero dimension return positive infinity.
+    ``extent`` is the full box size in meters. ``world_from_box`` locates its center. A ray
+    starting inside the box reaches its exit face. A zero dimension constrains the hit to
+    the plane of the collapsed slab. Rays parallel to that plane and all other misses return
+    positive infinity. Negative extents and nonfinite ray coordinates raise ``ValueError``.
     """
     dimensions = validated_vector(extent, "extent")
     if (dimensions < 0).any():
@@ -26,8 +27,6 @@ def box_ray_distances(
     rays = np.asarray(rays, dtype=float)
     if rays.ndim != 2 or rays.shape[1:] != (3,) or not np.isfinite(rays).all():
         raise ValueError("rays must have finite coordinates with shape (N, 3)")
-    if (dimensions == 0).any():
-        return np.full(len(rays), np.inf)
     box_from_cam = np.linalg.inv(validated_transform(world_from_box)) @ validated_transform(world_from_cam)
     origin = box_from_cam[:3, 3]
     directions = rays @ box_from_cam[:3, :3].T
@@ -41,7 +40,7 @@ def box_ray_distances(
     )
     lower, upper = np.minimum(near, far), np.maximum(near, far)
     lower[parallel], upper[parallel] = -np.inf, np.inf
-    miss = np.any(parallel & (np.abs(origin) > half), axis=1)
+    miss = np.any(parallel & ((np.abs(origin) > half) | (dimensions == 0)), axis=1)
     entry, leave = lower.max(axis=1), upper.min(axis=1)
     hit = np.where(entry > NEAR_Z, entry, leave)
     return np.where(~miss & (leave >= entry) & (hit > NEAR_Z), hit, np.inf)

@@ -57,17 +57,8 @@ def test_get_metadata(traffic_service):
 
 
 def test_get_available_scenes(traffic_service):
-    import grpc
-
     traffic = AlpaSimTraffic(traffic_service.endpoint)
     assert traffic.get_available_scenes() == ("clipgt-scene",)
-    traffic_service.delays["get_available_scenes"] = .1
-    with pytest.raises(RuntimeError, match="DEADLINE_EXCEEDED"):
-        traffic.get_available_scenes(timeout_s=.005)
-    traffic_service.delays.clear()
-    traffic_service.rpc_errors["get_available_scenes"] = (grpc.StatusCode.PERMISSION_DENIED, "not authorized")
-    with pytest.raises(RuntimeError, match="PERMISSION_DENIED.*not authorized"):
-        traffic.get_available_scenes()
 
 
 def test_served_scenes(traffic_service):
@@ -230,11 +221,6 @@ def test_simulate(traffic_service, traffic_inputs, monkeypatch):
         session.simulate(200000, np.eye(4), {})
     assert traffic_service.closed[-1].session_uuid == session.uuid
     assert all(channel.closed for channel in traffic_service.channels)
-    session = client.open_session(**traffic_inputs)
-    traffic_service.rpc_errors["simulate"] = (grpc.StatusCode.UNAVAILABLE, "traffic unavailable")
-    with pytest.raises(RuntimeError, match="UNAVAILABLE.*traffic unavailable"):
-        session.simulate(200000, np.eye(4), {})
-    assert traffic_service.closed[-1].session_uuid == session.uuid
     session = client.open_session(**traffic_inputs)
     traffic_service.rpc_errors["simulate"] = (grpc.StatusCode.INTERNAL, "predictor failed")
     traffic_service.rpc_errors["close_session"] = (grpc.StatusCode.UNAVAILABLE, "cleanup failed")

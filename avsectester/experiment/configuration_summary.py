@@ -16,7 +16,7 @@ def type_name(value: Any) -> str:
 
 
 def summary_value(value: Any) -> Any:
-    """Summarize configuration data; never inspect arbitrary object state or live handles."""
+    """Summarize configuration data. Never inspect arbitrary object state or live handles."""
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
@@ -44,5 +44,5 @@ def summary_value(value: Any) -> Any:
                 "sha256": hashlib.sha256(value.tobytes()).hexdigest()}
     if isinstance(value, np.generic):
         return summary_value(value.item())
-    raise TypeError(f"Cannot summarize configuration parameter {type(value).__name__}; "
-                    "override Attack.configuration_parameters() with a data description")
+    raise TypeError(f"Cannot summarize configuration parameter {type(value).__name__}. "
+                    "Override Attack.configuration_parameters() with a data description")

@@ -10,8 +10,9 @@
 
 `Experiment` accepts a typed configuration, mapping or YAML path. `prepare` selects or loads
 segments and runs each configured attack's offline phase. `execute` runs the selected treatment
-groups. `evaluate` measures their recorded evidence. `PreparedExperiment` contains metadata,
-units, artifacts and offline reports, without live simulator or `AVStack` history.
+groups. The module-level `evaluate` function measures the recorded evidence.
+`PreparedExperiment` contains metadata, units, artifacts, offline reports, the deployment
+plan and prepared initializations.
 
 This complete example uses the repository's memory components and a temporary output directory.
 It needs no simulator service, model weights or GPU.
@@ -80,7 +81,7 @@ connection. Loaded metadata follows
 [Save and reuse selected metadata](#save-and-reuse-selected-metadata).
 
 For resume with saved preparation or progress, validation checks frames and compatibility,
-skipping eligibility and `validate_start`. The CLI skips this preflight when it
+skipping start eligibility checks and `validate_start`. The CLI skips this preflight when it
 has already loaded preparation for `--prepared` or a completed preparation resume.
 [CLI exit codes](../reference/cli.md#exit-codes) distinguish input failures from
 execution failures.
@@ -105,9 +106,8 @@ the seed, start and prepared reference. Each run creates its own attack runtime 
 Only simulators that declare [`can_repeat_runs`](simulators.md), currently CARLA, accept more
 than one repeat. NuRec runs once per treatment, unit and seed.
 
-Repeated runs add a zero-based `repeat-R` directory between `seed-S` and the treatment
-directory and record `repeat: R` in run metadata. Single runs use the treatment directory
-directly under `seed-S` and omit the metadata field.
+See [Output layout](../reference/cli.md#output-layout) for repeated run directories and
+metadata.
 
 ## Results and failures
 

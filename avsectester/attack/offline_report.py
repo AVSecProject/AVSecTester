@@ -59,8 +59,8 @@ class OfflineReport:
     """Collect offline measurements and files independently of experiment execution.
 
     Names are shared across values, series, tables and images. Reusing a name within
-    one kind replaces its contents. The optional directory is the attack workspace;
-    persistence stores its contents under files/ beside the structured report.
+    one kind replaces its contents. The optional directory is the attack workspace.
+    Persistence stores its contents under files/ beside the structured report.
     """
 
     def __init__(self, directory: str | Path | None = None) -> None:

@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <OpenDRIVE>
   <!-- Test map for signal references. All signals are declared on road 3 and referenced from
-       roads 1 and 2, which is not a physical layout; it exercises per-reference stop lines and
+       roads 1 and 2, which is not a physical layout. It exercises per-reference stop lines and
        merged controlled lanes. "unbound" validates a lane that road 3 does not have, so it governs
        no lane. "opposite" and "ambiguous" govern lanes of opposite directions on road 1. -->
   <header revMajor="1" revMinor="4" name="ReferencedControls" version="1.00" date="2026-10-21" north="24" south="-4" east="20" west="0">

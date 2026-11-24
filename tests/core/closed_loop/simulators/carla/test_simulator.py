@@ -1,29 +1,30 @@
-"""CARLA capture alignment, native settings, deterministic preparation and actor control."""
+"""CARLA world lifecycle, native settings, sensor timing and ROS message boundaries."""
 
 from copy import deepcopy
 from dataclasses import replace
 import gc
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Thread
-from time import monotonic, sleep, time_ns
+from threading import Event
+from time import time_ns
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from avsectester.attack.runtime import AttackRuntime, AVStackAttackAction, SensorAttackAction
+from avsectester.attack.runtime import AttackRuntime, SensorAttackAction
 from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.closed_loop.hooks import Hook, HookSet
-from avsectester.closed_loop.ros_interception.channel import RelayChannel, RelayConnection
 from avsectester.closed_loop.ros_interception.declaration import InterceptedTopic, InterceptionDeclaration
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
 from avsectester.closed_loop.simulators.carla.sensors import SensorAlignmentError
 from avsectester.closed_loop.simulators.base import Initialization
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.datasets.carla import CarlaDataset, PrescribedMotion
-from avsectester.data_types import ActorState, Control, Observation, RosMessage
-from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
-from tests.fakes import CarlaNativeBoundary, CarlaWorld, ConstantAVStack, FakeExternalDrivingSystem
+from avsectester.data_types import ActorState, Control, Observation
+from avsectester.execution.runner import ClosedLoopRunner, RunRequest
+from tests.fakes import (
+    CarlaNativeBoundary, ConstantAVStack, ControllableClock, MemoryDrivingSystem,
+    RelayMemoryDrivingSystem,
+)
 
 
 def test_capture_alignment(monkeypatch, carla_dataset):
@@ -36,7 +37,7 @@ def test_capture_alignment(monkeypatch, carla_dataset):
     scenario["ego"]["sensors"][0]["sensor_tick"] = 0.
     dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
         runtime.reset(start)
         observation = runtime.observe()
@@ -48,7 +49,6 @@ def test_capture_alignment(monkeypatch, carla_dataset):
         lidar = runtime.sensor_view("lidar")
         capture_us = runtime.clock.time_us
         assert runtime.frame_range_us("top_lidar", capture_us) == range(capture_us - 100000, capture_us)
-        assert runtime.frame_range_us("front_camera", capture_us) == range(capture_us, capture_us)
         assert runtime.sensors == {"front", "lidar"} and runtime.camera_sensors == {"front"}
         assert lidar.camera is None and lidar.cam_from_world is None
         assert lidar.frame == observation.frame and lidar.time == observation.t
@@ -72,7 +72,7 @@ def test_capture_alignment(monkeypatch, carla_dataset):
         monkeypatch.setattr(manager, "has_data", camera_arrives_late)
         runtime.step(Control())
         assert list(runtime.observe().sensor_data) == ["front", "lidar"]
-    CarlaNativeBoundary(frame_offset=10).install(monkeypatch, None)
+    CarlaNativeBoundary(frame_offset=10).install(monkeypatch)
     with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.,
                         ground_settle_s=0.).create_runtime() as runtime:
         with pytest.raises(SensorAlignmentError, match="ahead"):
@@ -80,7 +80,7 @@ def test_capture_alignment(monkeypatch, carla_dataset):
 
 
 def test_traffic_light_state(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
         runtime.reset(start)
@@ -94,7 +94,7 @@ def test_traffic_light_state(monkeypatch, carla_dataset):
 
 
 def test_world_settings(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     dataset = carla_dataset
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
     client = {"rate": 10, "substepping": False, "max_substep_delta_time": .005, "max_substeps": 12}
@@ -125,7 +125,7 @@ def test_world_settings(monkeypatch, carla_dataset):
     with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime() as runtime:
         with pytest.raises(ValueError, match="unsupported.*Town10HD_Opt"):
             runtime.reset(start, world={"map_layers": {"unload": ["Buildings"]}})
-    CarlaNativeBoundary(world_settings_overrides={"substepping": True}).install(monkeypatch, None)
+    CarlaNativeBoundary(world_settings_overrides={"substepping": True}).install(monkeypatch)
     with simulator.create_runtime() as runtime, pytest.raises(RuntimeError, match="substepping"):
         runtime.reset(start)
     with pytest.raises(ValueError, match="substepping must be a boolean"):
@@ -136,13 +136,12 @@ def test_world_settings(monkeypatch, carla_dataset):
         CarlaSimulator({"max_substeps": 1.5})
 
 
-@pytest.mark.parametrize("module_name", ["carla", "carla.libcarla"])
-def test_copy_native_sdk_capture(module_name):
+def test_copy_native_sdk_capture():
     def cannot_copy(self, memo):
         raise TypeError("Native SDK captures cannot be deep-copied")
 
     capture_type = type("NativeCapture", (), {
-        "__module__": module_name, "__deepcopy__": cannot_copy, "raw_data": b"capture"})
+        "__module__": "carla.libcarla", "__deepcopy__": cannot_copy, "raw_data": b"capture"})
     capture = capture_type()
     wrapper = SimpleNamespace(data=capture, edits=[0])
     observation = Observation(0., 0, {"native": capture, "wrapped": wrapper})
@@ -158,7 +157,7 @@ def test_camera_warmup(monkeypatch, carla_dataset):
     start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
     results = []
     for warmup, expected_ticks in ((0., 0), (.2, 2)):
-        CarlaNativeBoundary().install(monkeypatch, None)
+        CarlaNativeBoundary().install(monkeypatch)
         simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=warmup)
         assert simulator.camera_warmup_ticks == expected_ticks
         with simulator.create_runtime() as runtime:
@@ -171,7 +170,7 @@ def test_camera_warmup(monkeypatch, carla_dataset):
     assert results[1].frame == results[0].frame + 2
     assert results[1].t == pytest.approx(results[0].t + .2)
 
-    CarlaNativeBoundary(include_rgb=False).install(monkeypatch, None)
+    CarlaNativeBoundary(include_rgb=False).install(monkeypatch)
     with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=.2).create_runtime() as runtime:
         runtime.reset(start)
         assert runtime.camera_sensors == set()
@@ -183,23 +182,26 @@ def test_camera_warmup(monkeypatch, carla_dataset):
 
 
 def test_scene_choices_follow_the_run_seed(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["ego"].update(spawn="random", vehicle="random")
     dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
     origins = []
-    for _ in range(2):
-        with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime(seed=17) as runtime:
+    for seed in (17, 17, 23, 29, 37):
+        with CarlaSimulator({"rate": 10}, settle_iters=0).create_runtime(seed=seed) as runtime:
             runtime.reset(start)
             origins.append((runtime.native["ego"].actor.type_id, runtime.state().ego.pose.copy()))
     assert origins[0][0] == origins[1][0]
-    np.testing.assert_allclose(origins[0][1], origins[1][1])
+    np.testing.assert_array_equal(origins[0][1], origins[1][1])
+    vehicle, pose = origins[0]
+    assert any(kind != vehicle or not np.array_equal(transform, pose)
+               for kind, transform in origins[2:])
 
 
 def test_cached_scenarios_across_maps(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     cached = []
     simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.)
@@ -214,14 +216,15 @@ def test_cached_scenarios_across_maps(monkeypatch, carla_dataset):
             assert resolved["client"]["map_name"] == name
             # Saved native names may also be asset-relative.
             resolved["client"]["map_name"] = f"Carla/Maps/{name}"
-            cached.append((start, Initialization(source.at(start.frame), resolved, source.provenance)))
-        for start, initialization in reversed(cached):
+            cached.append((name, start, Initialization(source.at(start.frame), resolved, source.provenance)))
+        for expected_map, start, initialization in reversed(cached):
             runtime.reset(start, initialization)
-            assert runtime.replay_scenario["client"]["map_name"] in {"Town03_Opt", "Town10HD_Opt"}
+            assert runtime.replay_scenario["client"]["map_name"] == expected_map
+            assert runtime.native["world"].get_map().name == expected_map
 
 
 def test_control_actor(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["npcs"] = [{"type": "CarlaMobileActor", "spawn": 2, "npc_type": "vehicle.b"}]
@@ -242,7 +245,7 @@ def test_control_actor(monkeypatch, carla_dataset):
 
 
 def test_set_actor_state(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["npcs"] = [{"type": "CarlaMobileActor", "spawn": 2, "npc_type": "vehicle.b"}]
@@ -267,7 +270,7 @@ def test_set_actor_state(monkeypatch, carla_dataset):
 
 
 def test_synchronous_actor_updates(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
     with CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.).create_runtime() as runtime:
         runtime.reset(start, world={"road_friction": {"friction_force_multiplier": .7}})
@@ -288,7 +291,7 @@ def test_synchronous_actor_updates(monkeypatch, carla_dataset):
 
 def test_ground_settling(monkeypatch, carla_dataset):
     start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
-    CarlaNativeBoundary(ground_height=-.3, ground_offset=(.4, -.3, 7.)).install(monkeypatch, None)
+    CarlaNativeBoundary(ground_height=-.3, ground_offset=(.4, -.3, 7.)).install(monkeypatch)
     results = []
     for duration in (0., .2):
         simulator = CarlaSimulator({"rate": 10}, settle_iters=0, camera_warmup_s=0.,
@@ -310,25 +313,16 @@ def test_ground_settling(monkeypatch, carla_dataset):
         CarlaSimulator({"rate": 10}, ground_settle_s=.15)
 
 
-def test_realtime_pacing(monkeypatch, carla_dataset):
-    class Clock:
-        def __init__(self):
-            self.now, self.waits = 0., []
+@pytest.fixture
+def clock(monkeypatch):
+    clock = ControllableClock()
+    clock.install(monkeypatch, CarlaSimulator)
+    return clock
 
-        def monotonic(self):
-            return self.now
 
-        def sleep(self, duration):
-            self.waits.append(duration)
-            self.advance(duration)
-
-        def advance(self, duration):
-            self.now += duration
-
-    clock = Clock()
-    monkeypatch.setattr("avsectester.closed_loop.simulators.carla.simulator.time", clock)
+def test_realtime_pacing(monkeypatch, carla_dataset, clock):
     CarlaNativeBoundary(tick_callback=lambda: clock.advance(.01),
-                        batch_callback=lambda: clock.advance(.005)).install(monkeypatch, None)
+                        batch_callback=lambda: clock.advance(.005)).install(monkeypatch)
     start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
     simulator = CarlaSimulator({"rate": 20}, decision_period_us=100000, settle_iters=0,
                                camera_warmup_s=0., external_startup_s=.1, realtime_factor=2.)
@@ -370,10 +364,10 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
             (.086, 0., .066, True),
             (0., 0., 0., False),
         ]
-        for sample, (framework, sleep, behind, resynchronized) in zip(samples, expected):
+        for sample, (framework, waited, behind, resynchronized) in zip(samples, expected):
             assert sample["resynchronized"] is resynchronized
             timing = {
-                "framework_s": framework, "sleep_s": sleep, "behind_schedule_s": behind,
+                "framework_s": framework, "sleep_s": waited, "behind_schedule_s": behind,
                 "resynchronized": resynchronized, "command_s": .005, "world_tick_s": .01,
             }
             assert {key: sample[key] for key in timing} == pytest.approx(timing)
@@ -427,11 +421,9 @@ def test_realtime_pacing(monkeypatch, carla_dataset):
         CarlaSimulator({}, realtime_factor=0.)
 
 
-def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
-    clock = SimpleNamespace(monotonic=lambda: 0., sleep=lambda duration: None)
-    monkeypatch.setattr("avsectester.closed_loop.simulators.carla.simulator.time", clock)
+def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front, clock):
     # The server can retain a disabled TF setting from a previous hosted run.
-    CarlaNativeBoundary(publish_tf=False).install(monkeypatch, None)
+    CarlaNativeBoundary(publish_tf=False).install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["ego"]["blueprint_attributes"] = {"role_name": "ego", "ros2_ackermann_control": True}
@@ -483,7 +475,7 @@ def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
     frames = datasets[0].frames("scene")
     start = datasets[0].scenario_start("scene", frames[0])
     initialization = initializations[0]
-    CarlaNativeBoundary(external_ego_throttle=.5).install(monkeypatch, None)
+    CarlaNativeBoundary(external_ego_throttle=.5).install(monkeypatch)
     with simulator.create_runtime() as runtime:
         with pytest.raises(RuntimeError, match="external client controlled the ego during CARLA replay"):
             runtime.generate_frame_data(start, frames[:2])
@@ -503,7 +495,7 @@ def test_external_ego_control(monkeypatch, carla_dataset, make_object_in_front):
 
 @pytest.fixture
 def hosted_start(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["ego"]["blueprint_attributes"] = {"role_name": "ego", "ros2_autoware_control": True}
@@ -532,393 +524,54 @@ def _imu_rig_start(start, *names):
     return dataset.scenario_start("scene", dataset.frames("scene")[0])
 
 
-class _Increase(SensorAttackAction):
-    sensor = "imu"
-
-    def __init__(self, duration, increment):
-        self.active_for_us, self.increment = duration, increment
-
-    def apply(self, value, view):
-        assert view.sensor == self.sensor and view.frame >= 0
-        assert view.sensor_from_world.shape == (4, 4)
-        value.fields["count"] += self.increment
-        return value
-
-
-def test_intercepted_messages(hosted_start, tmp_path, monkeypatch):
-    start = _imu_rig_start(hosted_start[0], "imu", "quiet_imu")
-    topics = ("/imu", "/trajectory", "/silent", "/quiet_imu", "/clean")
-    published, engaged, observed_ready = Event(), Event(), Event()
-    forwarding_started, observation_started = Event(), Event()
-    types = ("sensor_msgs/msg/Imu", "autoware_planning_msgs/msg/Trajectory",
-             "std_msgs/msg/Bool", "sensor_msgs/msg/Imu", "std_msgs/msg/Bool")
-    peers = []
-    advanced = []
-
-    class Peer(FakeExternalDrivingSystem):
-        interception = InterceptionDeclaration(tuple(
-            InterceptedTopic(topic, kind, ("/driver",), sensor)
-            for topic, kind, sensor in zip(topics, types, ("imu", None, None, "quiet_imu", None))),
-            observed_topics=("/public",))
-
-        def start(self, context):
-            session = super().start(context)
-            channel = RelayChannel(tmp_path / "msg.sock", relay_count=2)
-            forwarder, observer = RelayConnection(channel.path), RelayConnection(channel.path)
-            peers.extend((forwarder, observer))
-            original_stop, original_engage = session.stop, session.engage
-            responses = []
-
-            def forward():
-                finishing = False
-                while forwarder.wait(3.):
-                    for packet in forwarder.drain():
-                        if packet["kind"] == "reply":
-                            responses.append(packet)
-                            forwarder.send({"kind": "published", "id": packet["id"], "sent_ns": time_ns()})
-                        elif packet["kind"] == "origin":
-                            forwarding_started.set()
-                        elif packet["kind"] == "finish":
-                            finishing = True
-                    if len(responses) == 5:
-                        published.set()
-                    if finishing and len(responses) == 5:
-                        forwarder.send({"kind": "statistics", "role": "forwarding", "topics": {
-                            "/imu": {"pre_origin_messages": 7, "messages": 2, "post_run_messages": 0},
-                        }, "tf": {"paired": 3}})
-                        forwarder.flush(2.)
-                        return
-
-            def observe_peer():
-                while observer.wait(3.):
-                    for packet in observer.drain():
-                        if packet["kind"] == "origin":
-                            observation_started.set()
-                        if packet["kind"] == "finish":
-                            # This subscription frame crossed the runner's terminal boundary.
-                            observer.send({"kind": "observed", "topic": "/public", "type": types[0],
-                                           "fields": {"count": 99}, "received_ns": time_ns()})
-                            observer.send({"kind": "statistics", "role": "observation", "topics": {
-                                "/public": {"pre_origin_messages": 10, "messages": 2,
-                                            "post_run_messages": 0},
-                            }, "tf": {}})
-                            observer.flush(2.)
-                            return
-
-            workers = [Thread(target=target) for target in (forward, observe_peer)]
-            for worker in workers:
-                worker.start()
-
-            def engage():
-                original_engage()
-                for peer in peers:
-                    peer.send({"kind": "ready"})
-                    peer.flush(2.)
-                deadline = monotonic() + 2.
-                while not channel.ready and monotonic() < deadline:
-                    sleep(.001)
-                assert channel.ready
-                engaged.set()
-
-            def stop():
-                for worker in workers:
-                    worker.join(3.)
-                forwarder.close()
-                observer.close()
-                channel.close()
-                original_stop()
-
-            session.interception_channel = channel
-            session.engage = engage
-            session.stop = stop
-            session.replies = responses
-            return session
-
-    class Missing(_Increase):
-        sensor = "quiet_imu"
-
-    class Inject(AttackRuntime):
-        def step(self, context):
-            return (_Increase(0, 10), _Increase(50_000, 20), _Increase(None, 30), Missing(0, 1),
-                    AVStackAttackAction("/trajectory", lambda value, _: replace(value, fields={"count": 9})),
-                    AVStackAttackAction("/silent", lambda value, _: value))
-
-    def observe(value, context):
-        assert isinstance(value, RosMessage) and context.step == 0
-        context.record_output("intercepted_count", value.fields["count"])
-        return replace(value, fields={"count": value.fields["count"] + 1})
-
-    def observe_public(value, context):
-        context.record_output("public_count", value.fields["count"])
-        observed_ready.set()
-        return value
-
-    original_tick = CarlaWorld.tick
-
-    def tick(world):
-        if engaged.is_set():
-            assert not advanced
-            assert forwarding_started.wait(2.) and observation_started.wait(2.)
-            forwarder, observer = peers
-            for identity, index in enumerate((0, 0, 1, 1, 4)):
-                forwarder.send({"kind": "message", "id": identity, "topic": topics[index],
-                                "type": types[index], "fields": {"count": identity},
-                                "stamp_ns": identity, "received_ns": time_ns()})
-            assert published.wait(2.)
-            observer.send({"kind": "observed", "topic": "/public", "type": types[0],
-                           "fields": {"count": 10}, "received_ns": time_ns()})
-            assert observed_ready.wait(2.), "Messages must be processed while CARLA is still stepping"
-            advanced.append(True)
-        return original_tick(world)
-
-    monkeypatch.setattr(CarlaWorld, "tick", tick)
-    config = _hosted_simulator(Peer())
-    recording = RecordingPolicy(topics=("/imu", "/public"))
-    request = RunRequest(1, start=start,
-                         hooks=HookSet((Hook("/imu", observe), Hook("/public", observe_public))),
-                         attacks=(Inject(),), recording=recording)
-    with config.create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
-    imu = [record for record in log.messages if record.topic == "/imu"]
-    assert [item.original.fields["count"] for item in imu] == [0, 1]
-    assert [item.forwarded.fields["count"] for item in imu] == [61, 52]
-    modified = [record for record in log.messages if record.modifiable]
-    assert len(modified) == 5 and all(record.step == 0 for record in modified)
-    untouched, = [record for record in modified if not record.modified]
-    assert untouched.topic == "/clean" and untouched.relay_sent_ns is not None
-    observed, = [record for record in log.messages if not record.modifiable]
-    assert observed.topic == "/public" and observed.step == 0 and observed.relay_sent_ns is None
-    assert observed.original == RosMessage(types[0], {"count": 10})
-    replies = config.external_driving_system.sessions[-1].replies
-    assert [item.get("fields", {}).get("count") for item in replies] == [61, 52, 9, 9, None]
-    receipts = [action for action in log.steps[0].actions if action["kind"] == "receipt"]
-    assert [item["outcome"] for item in receipts] == ["applied"] * 7 + ["not_applied"] * 2
-    assert {item["reason"] for item in receipts[-2:]} == {
-        "stage_not_executed", "sensor_not_acquired_at_issue_time",
-    }
-    assert [item.value for item in log.steps[0].outputs] == [60, 51, 10]
-    assert "message_s" not in log.steps[0].telemetry["pacing"][0]
-    statistics = log.events[-1].data["interception"]
-    assert statistics["tf"] == {"paired": 3}
-    assert statistics["topics"]["/imu"]["messages"] == 2
-    assert statistics["topics"]["/public"] == {
-        "pre_origin_messages": 10, "messages": 1, "post_run_messages": 1,
-    }
-
-
-def _invalid_message_type(value, context):
-    return replace(value, type="std_msgs/msg/String")
-
-
-def _replace_readonly_message(value, context):
-    return replace(value)
-
-
-def _raise_message_error(value, context):
-    raise ValueError("relay hook sentinel")
-
-
-@pytest.mark.parametrize(("hook", "message"), [
-    pytest.param(Hook("/imu", _invalid_message_type), "/imu.*must return RosMessage", id="message_type"),
-    pytest.param(Hook("/public", _replace_readonly_message), "/public.*read-only",
-                 id="observation_replacement"),
-    pytest.param(Hook("/imu", _raise_message_error), "/imu.*relay hook sentinel", id="hook_exception"),
-])
-def test_intercepted_message_callback_failure_records_completed_decision(
-    hosted_start, tmp_path, monkeypatch, hook, message,
-):
+def test_message_processing_while_carla_tick_is_blocked(hosted_start, tmp_path, monkeypatch):
     start = _imu_rig_start(hosted_start[0], "imu")
-    invoked = Event()
-    peers = []
-    advanced = []
+    topic = "/imu"
+    kind = "sensor_msgs/msg/Imu"
+    system = RelayMemoryDrivingSystem(tmp_path / "relay.sock", InterceptionDeclaration(
+        (InterceptedTopic(topic, kind, ("/carla",), "imu"),)))
+    delivered = Event()
+    seen = []
 
-    class Peer(FakeExternalDrivingSystem):
-        interception = InterceptionDeclaration((
-            InterceptedTopic("/imu", "sensor_msgs/msg/Imu", ("/driver",), "imu"),
-        ), observed_topics=("/public",))
+    def tick():
+        if system.sessions and system.sessions[-1].engaged_s is not None:
+            system.peer.send({"kind": "message", "id": 0, "topic": topic, "type": kind,
+                              "fields": {}, "received_ns": time_ns()})
+            assert delivered.wait(2.), "Process the sensor message before the CARLA tick returns"
 
-        def start(self, context):
-            session = super().start(context)
-            channel = RelayChannel(tmp_path / "failure.sock")
-            peer = RelayConnection(channel.path)
-            peers.append((session, peer))
-            original_stop, original_poll = session.stop, session.poll
-            peer.send({"kind": "ready"})
+    class InspectImu(SensorAttackAction):
+        sensor = "imu"
+        active_for_us = 0
 
-            def poll(pose, simulation_time):
-                return original_poll(pose, simulation_time) and channel.ready
+        def apply(self, value, view):
+            assert view.sensor == self.sensor
+            world_from_sensor = view.ego.pose.copy()
+            world_from_sensor[:3, 3] += world_from_sensor[:3, 0]
+            np.testing.assert_allclose(view.sensor_from_world, np.linalg.inv(world_from_sensor))
+            result = replace(value, fields={"sample": 23})
+            seen.append(result)
+            delivered.set()
+            return result
 
-            def stop():
-                channel.close()
-                peer.close()
-                original_stop()
-
-            session.interception_channel = channel
-            session.poll, session.stop = poll, stop
-            return session
-
-    def invoke(value, context):
-        try:
-            return hook.handler(value, context)
-        finally:
-            invoked.set()
-
-    original_tick = CarlaWorld.tick
-
-    def tick(world):
-        if peers and peers[0][0].engaged_s is not None:
-            assert not advanced
-            peer = peers[0][1]
-            assert peer.wait(2.)
-            assert [frame["kind"] for frame in peer.drain()] == ["origin"]
-            common = {"type": "sensor_msgs/msg/Imu", "fields": {}, "received_ns": time_ns()}
-            peer.send({**common, "kind": "message", "topic": "/imu", "id": 0})
-            peer.send({**common, "kind": "observed", "topic": "/public"})
-            assert invoked.wait(2.)
-            advanced.append(True)
-        return original_tick(world)
-
-    monkeypatch.setattr(CarlaWorld, "tick", tick)
-    request = RunRequest(2, start=start, hooks=HookSet((Hook(hook.stage, invoke),)))
-    with _hosted_simulator(Peer()).create_runtime() as runtime:
-        with pytest.raises(RuntimeError, match=message) as caught:
-            ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
-    log = caught.value.run_log
-    assert log.status == "failed"
-    complete, = log.steps
-    assert complete.step == 0
-    assert advanced == [True]
-    failure, = (event for event in log.events if event.kind == "failure")
-    assert failure.data["message"] == str(caught.value)
-
-
-def test_message_and_world_callbacks_are_serialized(hosted_start):
-    class Peer(FakeExternalDrivingSystem):
-        interception = InterceptionDeclaration((), observed_topics=("/input",))
-
-    entering = Event()
-    attempted = Event()
-    message_entered = Event()
-    received = []
-
-    def world(value, context):
-        entering.set()
-        assert attempted.wait(2.)
-        assert not message_entered.wait(.1)
-        received.append("world")
-        return value
-
-    def message(value, context):
-        message_entered.set()
-        received.append("message")
-        return value
-
-    with _hosted_simulator(Peer()).create_runtime() as runtime:
-        runtime.reset(hosted_start[0])
-        dispatcher = HookSet((
-            Hook("simulator.step.pre", world),
-            Hook("/input", message),
-        )).session(runtime, ExternalAVStack())
-        state = runtime.state()
-
-        def receive():
-            assert entering.wait(2.)
-            attempted.set()
-            return dispatcher.emit_message(
-                "/input", RosMessage("std_msgs/msg/Bool", {"data": True}), state, step=0, outputs=[])
-
-        with dispatcher.activate(), ThreadPoolExecutor(max_workers=1) as executor:
-            reply = executor.submit(receive)
-            dispatcher.emit("simulator.step.pre", None)
-            assert reply.result(timeout=2.).fields == {"data": True}
-    assert received == ["world", "message"]
-
-
-def test_messages_use_the_actions_active_while_the_tick_is_blocked(hosted_start, tmp_path, monkeypatch):
-    start = _imu_rig_start(hosted_start[0], "imu")
-    sent, replies, engaged = [], [], []
-    received = Event()
-
-    class Peer(FakeExternalDrivingSystem):
-        interception = InterceptionDeclaration(
-            (InterceptedTopic("/imu", "sensor_msgs/msg/Imu", ("/carla",), "imu"),))
-
-        def start(self, context):
-            session = super().start(context)
-            channel = RelayChannel(tmp_path / "boundary.sock")
-            peer = RelayConnection(channel.path)
-            original_engage, original_stop = session.engage, session.stop
-
-            def respond():
-                finishing = False
-                while peer.wait(3.):
-                    for packet in peer.drain():
-                        if packet["kind"] == "reply":
-                            replies.append(packet)
-                            received.set()
-                            peer.send({"kind": "published", "id": packet["id"], "sent_ns": time_ns()})
-                        finishing |= packet["kind"] == "finish"
-                    if finishing and len(replies) == len(sent):
-                        peer.send({"kind": "statistics", "topics": {}, "tf": {}})
-                        peer.flush(2.)
-                        return
-
-            worker = Thread(target=respond)
-            worker.start()
-
-            def engage():
-                original_engage()
-                peer.send({"kind": "ready"})
-                peer.flush(2.)
-                while not channel.ready:
-                    sleep(.001)
-                engaged.append(peer)
-
-            def stop():
-                worker.join(3.)
-                peer.close()
-                channel.close()
-                original_stop()
-
-            session.interception_channel = channel
-            session.engage, session.stop = engage, stop
-            return session
-
-    original_tick = CarlaWorld.tick
-
-    def tick(world):
-        result = original_tick(world)
-        if engaged:
-            # CARLA publishes sensor data while the tick runs, before the client regains control.
-            peer = engaged[0]
-            sent.append(len(sent))
-            peer.send({"kind": "message", "id": sent[-1], "topic": "/imu", "type": "sensor_msgs/msg/Imu",
-                       "fields": {"count": 0}, "stamp_ns": world.frame, "received_ns": time_ns()})
-            peer.flush(2.)
-            assert received.wait(2.), "Framework must reply before the tick returns"
-            received.clear()
-        return result
-
-    monkeypatch.setattr(CarlaWorld, "tick", tick)
-
-    class EachDecision(AttackRuntime):
+    class InspectImuAttack(AttackRuntime):
         def step(self, context):
-            return (_Increase(0, 10 * (context.step + 1)),)
+            return (InspectImu(),)
 
-    request = RunRequest(2, start=start, attacks=(EachDecision(),), recording=RecordingPolicy(topics=("/imu",)))
-    with _hosted_simulator(Peer()).create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
-    assert len(sent) == 2
-    assert [(record.step, record.forwarded.fields["count"]) for record in log.messages] == [(0, 10), (1, 20)]
-    assert [packet.get("fields", {}).get("count") for packet in replies] == [10, 20]
-    receipts = [(step.step, action["outcome"], action["reason"]) for step in log.steps
-                for action in step.actions if action["kind"] == "receipt"]
-    assert receipts == [(0, "applied", None), (1, "applied", None)]
+    CarlaNativeBoundary(tick_callback=tick).install(monkeypatch)
+    request = RunRequest(1, start=start, attacks=(InspectImuAttack(),))
+    with _hosted_simulator(system).create_runtime() as runtime:
+        ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
+        native = runtime.native
+        imu = next(actor for actor in native["world"].get_actors() if actor.type_id == "sensor.other.imu")
+        assert imu.attributes["ros_topic_name"] == "/avsectester/intercepted/imu"
+    assert len(seen) == 1
+    reply, = system.replies
+    assert reply["fields"] == {"sample": 23}
 
 
 def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
     start, frames = hosted_start
-    system = FakeExternalDrivingSystem(ready_at_s=.8)
+    system = MemoryDrivingSystem(ready_at_s=.8)
     settings = _hosted_simulator(system)
     frozen_before = gc.get_freeze_count()
     callbacks_before = tuple(gc.callbacks)
@@ -950,9 +603,9 @@ def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
     assert gc.get_freeze_count() == 0
     assert tuple(gc.callbacks) == callbacks_before
     assert settings.identity["external_driving_system"] == {
-        "type": "FakeExternalDrivingSystem", "ready_at_s": .8,
+        "type": "MemoryDrivingSystem", "ready_at_s": .8,
     }
-    failing_system = FakeExternalDrivingSystem(startup_error="Driver startup timed out")
+    failing_system = MemoryDrivingSystem(startup_error="Driver startup timed out")
     with pytest.raises(TimeoutError, match="Driver startup timed out"):
         with _hosted_simulator(failing_system).create_runtime() as failed:
             failed.reset(start, initialization, closed_loop_run=True)
@@ -970,7 +623,7 @@ def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
     assert gc.get_freeze_count() == 0
     assert tuple(gc.callbacks) == callbacks_before
 
-    failing_system = FakeExternalDrivingSystem(run_error="Driver disconnected")
+    failing_system = MemoryDrivingSystem(run_error="Driver disconnected")
     with pytest.raises(RuntimeError, match="Driver disconnected"):
         with _hosted_simulator(failing_system).create_runtime() as failed:
             failed.reset(start, initialization, closed_loop_run=True)
@@ -985,14 +638,14 @@ def test_hosted_driver_lifecycle(hosted_start, monkeypatch):
     with pytest.raises(ValueError, match="external_startup_s applies only without"):
         CarlaSimulator({"rate": 10}, ego_control="ros2", realtime_factor=1.,
                        external_startup_s=1., external_driving_system=system)
-    CarlaNativeBoundary(world_settings_overrides={"publish_tf": True}).install(monkeypatch, None)
+    CarlaNativeBoundary(world_settings_overrides={"publish_tf": True}).install(monkeypatch)
     with settings.create_runtime() as runtime, pytest.raises(RuntimeError, match="publish_tf"):
         runtime.reset(start)
 
 
 def test_traffic_light_origin_after_readiness_hold(hosted_start):
     start, frames = hosted_start
-    system = FakeExternalDrivingSystem(ready_at_s=1.)
+    system = MemoryDrivingSystem(ready_at_s=1.)
     with _hosted_simulator(system).create_runtime() as runtime:
         source = runtime.generate_frame_data(start, frames)
         expected = source.at(frames[0])
@@ -1011,7 +664,7 @@ def test_traffic_light_origin_after_readiness_hold(hosted_start):
 
 
 def test_ros_rig_uses_native_attachments_and_ticks(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     transform = {"location": {"x": .9, "y": 0., "z": 2.},
@@ -1043,7 +696,7 @@ def test_ros_rig_uses_native_attachments_and_ticks(monkeypatch, carla_dataset):
 
 @pytest.fixture
 def two_tick_start(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     simulator = CarlaSimulator({"rate": 20}, decision_period_us=100000, settle_iters=0)
     frames = carla_dataset.frames("scene")
     with simulator.create_runtime() as runtime:
@@ -1065,7 +718,6 @@ def test_native_tick_schedule(two_tick_start):
             runtime.advance_interval(runtime.clock.time_us + 100000, Control(),
                                      report_times_us=(runtime.clock.time_us + 25000,))
         assert runtime.state().frame == before.frame
-        assert "pipeline" not in runtime.replay_scenario["ego"]
         np.testing.assert_array_equal(runtime.state().ego.pose, before.ego.pose)
     with pytest.raises(ValueError, match="client.rate.*integer-microsecond"):
         CarlaSimulator({"rate": 60})
@@ -1082,7 +734,7 @@ def test_recorded_tick_history(two_tick_start):
         assert pose_only.vehicle_state is not None
         pose_only.vehicle_state.position.x[0] = 999.
         assert runtime.observe_recorded_at(-100000, ()).observation.vehicle_state.position.x[0] != 999.
-        acquisition = runtime.observe_recorded_at(-50000, ("front_camera",))
+        acquisition = runtime.observe_recorded_at(-50000, ("front",))
         assert acquisition.observation.sensor_data.keys() == {"front"}
         assert acquisition.sensor_geometry["front"].sensor == "front"
         with pytest.raises(ValueError, match="insufficient replayed sensor history"):
@@ -1104,28 +756,8 @@ def test_force_gt_replays_recipe(two_tick_start):
         np.testing.assert_allclose(runtime.state().ego.pose, recorded_end.ego.pose)
 
 
-def test_intermediate_tick_capture(two_tick_start):
-    simulator, start, initialization, _ = two_tick_start
-    with simulator.create_runtime() as runtime:
-        runtime.configure_timing(TimingConfiguration())
-        runtime.reset(start, initialization)
-        origin = runtime.clock.time_us
-        before = runtime.state()
-        runtime.advance_interval(origin + 100000, Control(throttle=.3),
-                                 report_times_us=(origin + 50000,))
-        middle = runtime.capture_at(origin + 50000, ())
-        expected = runtime.state()
-        assert middle.sensor_data == {} and middle.calibration == {}
-        assert middle.t == pytest.approx(before.t + .05)
-        assert middle.frame == before.frame + 1
-        assert middle.t == expected.t and middle.frame == expected.frame
-        assert middle.ego_speed == expected.ego_speed
-        np.testing.assert_array_equal(middle.vehicle_state.position.x, expected.vehicle_state.position.x)
-        runtime.capture_at(origin + 100000)
-
-
-def test_capture_selection_uses_native_tick_schedule(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+def test_capture_at_native_tick(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["ego"]["sensors"] = [{"type": "CarlaLidar", "name": "lidar"}]
@@ -1133,42 +765,30 @@ def test_capture_selection_uses_native_tick_schedule(monkeypatch, carla_dataset)
     start = dataset.scenario_start("scene", dataset.frames("scene")[0])
     simulator = CarlaSimulator({"rate": 20}, decision_period_us=100000, settle_iters=0)
     with simulator.create_runtime() as runtime:
-        runtime.configure_timing(TimingConfiguration(sensors={"front": SensorTiming(50000)}))
+        runtime.configure_timing(TimingConfiguration(sensors={
+            "front": SensorTiming(50000), "lidar": SensorTiming(150000),
+        }))
         runtime.reset(start)
-        assert "sensor_tick" not in runtime.replay_scenario["ego"]["sensors"][0]
+        before = runtime.state()
         origin = runtime.clock.time_us
         runtime.advance_interval(origin + 100000, Control(), report_times_us=(origin + 50000,))
-        intermediate = runtime.capture_at(origin + 50000, ("front",))
-        assert set(intermediate.sensor_data) == {"front"}
-        logical_name = "front_camera"
-        assert runtime.canonical_sensor_id(logical_name) == "front"
-        assert runtime.sensor_geometry(logical_name).sensor == "front"
-        assert runtime.sensor_view(logical_name).sensor == "front"
-        assert runtime.capture_at(origin + 50000, (logical_name,)).sensor_data.keys() == {"front"}
         with pytest.raises(ValueError, match="base ticks"):
             runtime.capture_at(origin + 75000, ("front",))
         with pytest.raises(ValueError, match="not due.*lidar"):
             runtime.capture_at(origin + 50000, ("lidar",))
-        endpoint = runtime.capture_at(origin + 100000, ("front", "lidar"))
-        assert set(endpoint.sensor_data) == {"front", "lidar"}
-        assert endpoint.frame == intermediate.frame + 1
-
-
-def test_capture_without_due_sensors(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
-    start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
-    simulator = CarlaSimulator({"rate": 20}, decision_period_us=100000, settle_iters=0)
-    with simulator.create_runtime() as runtime:
-        runtime.configure_timing(TimingConfiguration(sensors={"front": SensorTiming(150000)}))
-        runtime.reset(start)
-        origin = runtime.clock.time_us
-        runtime.advance_interval(origin + 100000, Control())
-        with pytest.raises(ValueError, match="not due"):
-            runtime.capture_at(origin + 50000, ("front",))
         assert runtime.clock.time_us == origin
-        assert runtime.capture_at(origin + 100000, ()).sensor_data == {}
+
+        middle = runtime.capture_at(origin + 50000, ())
+        assert middle.sensor_data == {} and middle.calibration == {}
+        assert middle.t == pytest.approx(before.t + .05)
+        assert middle.frame == before.frame + 1
+        assert middle.ego_speed == runtime.state().ego_speed
+        np.testing.assert_array_equal(
+            middle.vehicle_state.position.x, runtime.state().vehicle_state.position.x)
+        endpoint = runtime.capture_at(origin + 100000, ("front",))
+        assert set(endpoint.sensor_data) == {"front"}
+        assert endpoint.frame == middle.frame + 1
         runtime.advance_interval(origin + 200000, Control())
-        acquisition = runtime.capture_at(origin + 150000, ("front_camera",))
-        assert acquisition.sensor_data.keys() == {"front"}
-        assert acquisition.t == runtime.state().t
-        assert runtime.capture_at(origin + 200000, ()).sensor_data == {}
+        both_due = runtime.capture_at(origin + 150000, ("front", "lidar"))
+        assert set(both_due.sensor_data) == {"front", "lidar"}
+        assert both_due.t == runtime.state().t

@@ -39,7 +39,7 @@ def _read_document(path: str | Path) -> _MetadataDocument:
         raise ValueError("Metadata file format must be avsectester.metadata")
     version = document.get("version")
     if type(version) is not int or version != 1:
-        raise ValueError("Unsupported metadata file version; expected 1")
+        raise ValueError("Unsupported metadata file version. Expected 1")
     dataset_type = document.get("dataset_type")
     if not isinstance(dataset_type, str):
         raise ValueError("Metadata dataset_type must be a module:Class path")

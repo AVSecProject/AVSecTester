@@ -116,15 +116,16 @@ def _object_mask(
 class CompositePlan:
     """Texture-independent geometry and composition for one camera image.
 
-    Sampling, coverage, nearest-surface ownership and occlusion are fixed when planning; only
+    Sampling, coverage, nearest-surface ownership and occlusion are fixed when planning. Only
     surface colors remain free. Apply and composite share the floating-point blend and all
     differentiable harmonizers, differing only in final 8-bit rounding. Non-differentiable
     harmonizers support deployment through apply only. Each object's harmonizer sees the same
     unadjusted composite and original background, and changes only its visible pixels.
     Differentiable harmonizers also see the nominal composite, in which surfaces with a
     nominal texture show it instead of their texture or replacement colors.
-    Depth combines scene and surface evidence; scene_visibility keeps only visible surfaces.
-    Create plans with ``plan_composite``; a plan constructed directly has no surface samples.
+    Depth combines scene and surface evidence.
+    The ``scene_visibility`` input keeps only visible surfaces.
+    Create plans with ``plan_composite``. A plan constructed directly has no surface samples.
     """
 
     objects: tuple[PlacedObject, ...]
@@ -143,7 +144,7 @@ class CompositePlan:
         """Blend surfaces and differentiable harmonizers over a (3, H, W) image in [0, 1].
 
         Textures maps (object_id, surface index) to straight RGB (3, h, w) colors at the
-        surface texture's size. Asset alpha preserves its shape; omitted surfaces keep their
+        surface texture's size. Asset alpha preserves its shape. Omitted surfaces keep their
         asset colors. Gradients reach the image and replacement colors, not planned geometry.
         Each harmonizer receives the same unadjusted blend, its visible mask, the original
         background and the nominal blend. The result is clamped to [0, 1], as ``apply`` clips
@@ -228,7 +229,7 @@ class CompositePlan:
         for key, colors in textures.items():
             if (not isinstance(key, tuple) or len(key) != 2 or key[0] not in assets
                     or not isinstance(key[1], int) or not 0 <= key[1] < len(assets[key[0]].surfaces)):
-                raise KeyError(f"Unknown planned surface {key!r}; keys are (object_id, surface index)")
+                raise KeyError(f"Unknown planned surface {key!r}. Keys are (object_id, surface index)")
             texture = assets[key[0]].surfaces[key[1]].texture
             if not isinstance(colors, torch.Tensor) or tuple(colors.shape) != (3, *texture.shape[:2]):
                 raise ValueError(f"Colours for {key!r} must be a (3, {texture.shape[0]}, {texture.shape[1]}) tensor")
@@ -271,7 +272,7 @@ def plan_composite(
     true where the scene does not hide these objects, measured for example by rendering them
     inside the scene. It excludes ``scene_depth`` and ``occluders``, and the plan's depth then
     holds only the visible object surfaces. Otherwise aligned scene z-depth, when supplied, is
-    the sole occlusion evidence; without it, actor cuboids with known extents approximate the
+    the sole occlusion evidence. Without it, actor cuboids with known extents approximate the
     scene inside the candidate projection regions. Actor IDs without known extents are returned
     as ``ignored_occluders``. Surface order breaks exact depth ties, so the result does not
     depend on object order otherwise.

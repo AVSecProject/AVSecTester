@@ -33,8 +33,8 @@ def _ftheta_box_bounds(camera: FThetaCamera, corners: np.ndarray) -> np.ndarray:
     """Conservative bounds of curved projected edges using interval arithmetic.
 
     In normalized perspective coordinates an edge stays inside its endpoint rectangle.
-    Bound the radial polynomial and theta/tan(theta) separately on each short segment;
-    unlike corner sampling, this includes edge extrema between the vertices.
+    Bound the radial polynomial and theta/tan(theta) separately on each short segment.
+    Unlike corner sampling, this includes edge extrema between the vertices.
     """
     coefficients = np.asarray(camera.angle_to_pixeldist, dtype=float)
     if not len(coefficients) or coefficients[0] != 0:
@@ -81,8 +81,8 @@ def _ftheta_partial_box_bounds(camera: FThetaCamera, corners: np.ndarray) -> np.
     """Bound forward projections of a box crossing the camera plane.
 
     A lateral rectangle bounds ray azimuths even as optical z approaches zero.
-    Polynomial extrema bound the radial distance independently of that azimuth;
-    no division by near-zero optical z or full-image ray query is needed.
+    Polynomial extrema bound the radial distance independently of that azimuth.
+    No division by near-zero optical z or full-image ray query is needed.
     """
     corners = _windshield_points(camera, corners)
     lower, upper = corners[:, :2].min(axis=0), corners[:, :2].max(axis=0)

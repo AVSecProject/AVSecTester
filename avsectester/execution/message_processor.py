@@ -129,7 +129,7 @@ class MessageProcessor:
         for packet in sorted(self._reports.values(), key=lambda report: report.get("role") == "observation"):
             topics.update(packet["topics"])
             tf.update(packet["tf"])
-        # One-way observations sent before the stop signal can reach us after the last decision.
+        # Observations sent before the stop signal can arrive after the last decision.
         for topic, count in self._post_run_observations.items():
             topics[topic]["messages"] -= count
             topics[topic]["post_run_messages"] += count

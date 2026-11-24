@@ -34,8 +34,8 @@ def constrain_to_ground(
     vertical directions within 100 m. Corrections exceeding 1.5 m or 10 degrees are rejected.
     The returned status is ``successful_update``, ``insufficient_intersections``,
     ``high_translation`` or ``high_rotation``. Failed updates return the original pose.
-    Like AlpaSim, rotating about the box center after centroid alignment approximates contact;
-    it does not perform another translation to eliminate the small residual on a slope.
+    Like AlpaSim, rotating about the box center after centroid alignment approximates contact.
+    It does not perform another translation to eliminate the small residual on a slope.
     """
     pose = validated_transform(world_from_box)
     dimensions = validated_vector(extent, "extent")

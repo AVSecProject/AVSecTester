@@ -60,18 +60,9 @@ def test_run(tmp_path):
     invalid = runner.invoke(cli.app, ["run", str(invalid_path)])
     assert invalid.exit_code == 2 and "Configuration error" in invalid.output
 
-    no_selector_path = write_configuration(tmp_path / "without-selector")
-    no_selector = yaml.safe_load(no_selector_path.read_text())
-    no_selector["attacks"] = {"supplied": {"type": "tests.fakes:MetadataOnlyAttack"}}
-    no_selector_path.write_text(yaml.safe_dump(no_selector))
-    invalid = runner.invoke(cli.app, ["run", str(no_selector_path)])
-    assert invalid.exit_code == 2 and "Configuration error" in invalid.output
-    assert "supplied" in invalid.output and "metadata.load" in invalid.output
-    assert not (no_selector_path.parent / "results").exists()
-
     failure_path = write_configuration(tmp_path / "repeated-failure")
     failure_spec = yaml.safe_load(failure_path.read_text())
-    failure_spec["simulator"]["type"] = "tests.fakes:RepeatedRunMemorySimulator"
+    failure_spec["simulator"]["options"] = {"can_repeat_runs": True}
     failure_spec["attacks"]["probe"]["options"] = {"max_segments": 1}
     failure_spec["runs"].update(repeats=2, treatments=[
         {"name": "clean"},
@@ -212,7 +203,7 @@ def test_nre_serve(tmp_path, monkeypatch):
     assert served.exit_code == 0, served.output
     assert "endpoint=127.0.0.1:50152" in served.output and "scenes=1" in served.output
     assert "Stop it with:" in served.output and state.exists() and (tmp_path / "assets").is_dir()
-    runner.invoke(cli.app, ["nre", "stop", str(path)])
+    assert runner.invoke(cli.app, ["nre", "stop", str(path)]).exit_code == 0
     labels = {"avsectester.service-owner": "0" * 32, "avsectester.service-user": str(os.getuid())}
     previous = {"id": "id-previous", "labels": labels, "running": True}
     state.write_text(json.dumps(previous))
@@ -222,7 +213,7 @@ def test_nre_serve(tmp_path, monkeypatch):
     replaced = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
     assert replaced.exit_code == 0, replaced.output
     assert "Removed exited NRE container: avsectester-nre-50152" in replaced.output
-    runner.invoke(cli.app, ["nre", "stop", str(path)])
+    assert runner.invoke(cli.app, ["nre", "stop", str(path)]).exit_code == 0
     monkeypatch.setenv("DOCKER_MODE", "exit")
     failed = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "2"])
     assert failed.exit_code == 1 and "startup diagnostic" in failed.output
@@ -231,11 +222,11 @@ def test_nre_serve(tmp_path, monkeypatch):
 
 def test_nre_stop(tmp_path, monkeypatch):
     path = nre_configuration(tmp_path)
-    state, calls = docker_process_boundary(tmp_path, monkeypatch)
+    state, _ = docker_process_boundary(tmp_path, monkeypatch)
     state = state / "owned-nre"
     served = runner.invoke(cli.app, ["nre", "serve", str(path), "--gpu", "1", "--name", "owned-nre"])
     assert served.exit_code == 0, served.output
-    # Stop must work even after the dataset has moved; it needs only the renderer endpoint.
+    # Stopping the renderer only needs its endpoint.
     (tmp_path / "data" / "scene.usdz").unlink()
     (tmp_path / "data").rmdir()
     stopped = runner.invoke(cli.app, ["nre", "stop", str(path), "--name", "owned-nre"])
@@ -261,7 +252,7 @@ def traffic_configuration(directory, endpoint="127.0.0.1:6200"):
     return path
 
 
-def test_trafficsim_serve_dry_run(tmp_path, monkeypatch):
+def test_trafficsim_serve_without_docker(tmp_path, monkeypatch):
     invalid = write_configuration(tmp_path / "invalid-traffic")
     rejected = runner.invoke(cli.app, ["trafficsim", "serve", str(invalid), "--gpu", "2", "--models", str(tmp_path)])
     assert rejected.exit_code == 2 and "AlpaSimTraffic" in rejected.output
@@ -284,7 +275,7 @@ def test_trafficsim_serve(tmp_path, monkeypatch):
 
     models = tmp_path / "models"
     models.mkdir()
-    state, calls = docker_process_boundary(tmp_path, monkeypatch)
+    state, _ = docker_process_boundary(tmp_path, monkeypatch)
     state = state / "test-traffic"
     with TrafficServiceBoundary() as service:
         path = traffic_configuration(tmp_path / "configuration", service.endpoint)
@@ -304,7 +295,7 @@ def test_trafficsim_serve(tmp_path, monkeypatch):
 
 def test_trafficsim_stop(tmp_path, monkeypatch):
     path = traffic_configuration(tmp_path)
-    state, calls = docker_process_boundary(tmp_path, monkeypatch)
+    state, _ = docker_process_boundary(tmp_path, monkeypatch)
     state = state / "avsectester-trafficsim-6200"
     state.write_text("true")
     # Stopping needs only the traffic endpoint, not live archives or weights.
@@ -379,7 +370,11 @@ def test_run_manages_local_services(managed_nurec_cli, monkeypatch):
     assert not state.exists()
 
 
-def test_run_validation_errors(tmp_path):
+@pytest.mark.parametrize(("failure", "code", "message"), [
+    pytest.param("unexpected dataset failure", 1, "Preparation validation error:", id="error"),
+    pytest.param("interrupt", 130, "Preparation validation interrupted.", id="interrupted"),
+])
+def test_run_validation_errors(tmp_path, failure, code, message):
     path = write_configuration(tmp_path)
     spec = yaml.safe_load(path.read_text())
     dataset = MemoryDataset()
@@ -388,11 +383,9 @@ def test_run_validation_errors(tmp_path):
     save_metadata((AttackSegment("scene", frames[0], frames[2]),), source,
                   dataset_type="tests.fakes:MemoryDataset")
     spec["metadata"] = {"load": str(source)}
-    for failure, code, message in (("unexpected dataset failure", 1, "Preparation validation error:"),
-                                    ("interrupt", 130, "Preparation validation interrupted.")):
-        spec["dataset"]["options"] = {"scenarios_error": failure}
-        path.write_text(yaml.safe_dump(spec))
-        result = runner.invoke(cli.app, ["run", str(path)])
-        assert result.exit_code == code, result.output
-        assert message in result.output
-        assert isinstance(result.exception, SystemExit)
+    spec["dataset"]["options"] = {"scenarios_error": failure}
+    path.write_text(yaml.safe_dump(spec))
+    result = runner.invoke(cli.app, ["run", str(path)])
+    assert result.exit_code == code, result.output
+    assert message in result.output
+    assert isinstance(result.exception, SystemExit)

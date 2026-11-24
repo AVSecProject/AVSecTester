@@ -19,7 +19,6 @@ def test_harmonize_tensor(reference, reference_linear):
     composite[:, 0, 0] = torch.tensor((.9, .8, .7))
     harmonizer = ExposureHarmonizer(reference, ring_px=1, gain_range=(.1, 2.), feather_sigma=0.)
     gain = reference_linear / (.4 + 1e-6)
-    assert harmonizer.exposure_gain(composite, mask, background).item() == pytest.approx(gain)
     result = harmonizer.harmonize_tensor(composite, mask, background, composite)
     expected = 1.055 * (.4 * gain) ** (1 / 2.4) - .055
     torch.testing.assert_close(result[:, mask], torch.full((3, 9), expected))
@@ -76,13 +75,22 @@ def test_numpy_and_tensor_interfaces_match():
     result = harmonizer(composite, mask, background)
     np.testing.assert_array_equal(result, expected)
     np.testing.assert_array_equal(result[mask == 0], composite[mask == 0])
-    for options in ({"reference": "other"}, {"ring_px": -1},
-                    {"feather_sigma": float("nan")}, {"gain_range": (1., .5)}):
-        with pytest.raises(ValueError):
-            ExposureHarmonizer(**options)
 
 
-def test_pctnet_harmonizer(tmp_path, monkeypatch):
+def test_exposure_configuration():
+    ExposureHarmonizer("under", ring_px=1, gain_range=(.1, 2.), feather_sigma=0.)
+    with pytest.raises(ValueError, match="reference"):
+        ExposureHarmonizer(reference="other")
+    with pytest.raises(ValueError, match="ring_px"):
+        ExposureHarmonizer(ring_px=-1)
+    with pytest.raises(ValueError, match="feather_sigma"):
+        ExposureHarmonizer(feather_sigma=float("nan"))
+    with pytest.raises(ValueError, match="gain_range"):
+        ExposureHarmonizer(gain_range=(1., .5))
+
+
+@pytest.fixture
+def pctnet_weights(tmp_path):
     # The learned-model source and checkpoint are the external inference boundary.
     source = tmp_path / "libcom" / "image_harmonization" / "source"
     source.mkdir(parents=True)
@@ -91,9 +99,14 @@ def test_pctnet_harmonizer(tmp_path, monkeypatch):
         "import torch\n"
         "class PCTNet(torch.nn.Module):\n"
         "    def forward(self, image_lr, image, mask_lr, mask):\n"
-        "        return torch.full_like(image, .5)[None]\n")
+        "        return torch.where(mask > 0, torch.full_like(image, .5), image)[None]\n")
     weights = tmp_path / "weights.pth"
     torch.save({}, weights)
+    return weights
+
+
+def test_pctnet_harmonizer(pctnet_weights, monkeypatch):
+    weights, tmp_path = pctnet_weights, pctnet_weights.parent
     image = np.full((8, 9, 3), 220, dtype=np.uint8)
     mask = np.full((8, 9), 255, dtype=np.uint8)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
@@ -117,23 +130,32 @@ def test_harmonize_tensor_gradient_and_empty_regions():
     harmonizer = ExposureHarmonizer("under", ring_px=1, gain_range=(.1, 2.), feather_sigma=0.)
     with pytest.raises(ValueError, match="nominal composite"):
         harmonizer.harmonize_tensor(composite, mask, background, composite[:, :8])
-    assert replace(harmonizer, gain_range=(.6, .7)).exposure_gain(
-        composite, mask, background).item() == pytest.approx(.6)
-    assert replace(harmonizer, gain_range=(.05, .1)).exposure_gain(
-        composite, mask, background).item() == pytest.approx(.1)
     colors = composite.clone()
     colors[2, mask] = 0.
     colors.requires_grad_()
     harmonizer.harmonize_tensor(colors, mask, background, colors)[0, mask].sum().backward()
     assert torch.isfinite(colors.grad).all() and colors.grad[:, mask].abs().sum() > 0
     empty = torch.zeros_like(mask)
-    assert harmonizer.exposure_gain(composite, empty, background) is None
     torch.testing.assert_close(harmonizer.harmonize_tensor(composite, empty, background, composite), composite)
     ring = ExposureHarmonizer(reference="ring")
     full = torch.ones_like(mask)
-    assert ring.exposure_gain(composite, full, background) is None
     torch.testing.assert_close(ring.harmonize_tensor(composite, full, background, composite), composite)
 
+
+
+def test_exposure_gain():
+    mask = torch.zeros(9, 9, dtype=torch.bool)
+    mask[3:6, 3:6] = True
+    background = torch.full((3, 9, 9), .3)
+    composite = torch.full((3, 9, 9), .7)
+    harmonizer = ExposureHarmonizer("under", ring_px=1, gain_range=(.1, 2.), feather_sigma=0.)
+    assert replace(harmonizer, gain_range=(.6, .7)).exposure_gain(
+        composite, mask, background).item() == pytest.approx(.6)
+    assert replace(harmonizer, gain_range=(.05, .1)).exposure_gain(
+        composite, mask, background).item() == pytest.approx(.1)
+    assert harmonizer.exposure_gain(composite, torch.zeros_like(mask), background) is None
+    ring = ExposureHarmonizer(reference="ring")
+    assert ring.exposure_gain(composite, torch.ones_like(mask), background) is None
     corner = torch.zeros(4, 5, dtype=torch.bool)
     corner[0, 0] = True
     background = torch.zeros(3, 4, 5)
@@ -143,8 +165,14 @@ def test_harmonize_tensor_gradient_and_empty_regions():
     for radius, reference_luminance in ((1, 2 / 3), (12, 2 / 19)):
         gain = replace(ring, ring_px=radius).exposure_gain(composite, corner, background)
         assert gain.item() == pytest.approx(reference_luminance / (1 + 1e-6))
+
+
+
+def test_nondifferentiable_harmonizer():
+    image = torch.ones((3, 2, 2))
+    mask = torch.ones((2, 2), dtype=torch.bool)
     with pytest.raises(NotImplementedError, match="ClassicHarmonizer.*not differentiable"):
-        ClassicHarmonizer().harmonize_tensor(composite, corner, background, composite)
+        ClassicHarmonizer().harmonize_tensor(image, mask, image, image)
 
 
 def test_classic_harmonizer():
@@ -166,3 +194,27 @@ def test_classic_harmonizer():
         image, mask, background)
     np.testing.assert_allclose(cloned, background, atol=2)
     assert not np.array_equal(cloned, image)
+
+
+@pytest.fixture
+def pctnet_harmonizer(pctnet_weights):
+    return PCTNetHarmonizer(pctnet_weights.parent, device="cpu",
+                            weights=pctnet_weights, strict=True)
+
+
+@pytest.mark.parametrize("make_harmonizer", [
+    pytest.param(lambda request: ExposureHarmonizer(reference="under"), id="exposure"),
+    pytest.param(lambda request: ClassicHarmonizer(poisson=False), id="classic"),
+    pytest.param(lambda request: request.getfixturevalue("pctnet_harmonizer"), id="pctnet"),
+])
+def test_harmonizer_contract(make_harmonizer, request):
+    harmonizer = make_harmonizer(request)
+    composite = np.full((8, 9, 3), 210, np.uint8)
+    background = np.full_like(composite, 40)
+    mask = np.zeros(composite.shape[:2], np.uint8)
+    mask[2:6, 2:7] = 255
+    adjusted = harmonizer(composite, mask, background)
+    assert adjusted.shape == composite.shape and adjusted.dtype == np.uint8
+    np.testing.assert_array_equal(adjusted[mask == 0], composite[mask == 0])
+    np.testing.assert_array_equal(composite, 210)
+    np.testing.assert_array_equal(background, 40)

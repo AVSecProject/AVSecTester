@@ -1,7 +1,6 @@
 """Build each shipped detector configuration and forward a small synthetic input.
 
-Checkpoint weights are intentionally omitted; this verifies model/configuration compatibility,
-not detector accuracy. Optional MMDetection installations may skip these native component cases.
+Build models without checkpoint weights to check configuration compatibility. Optional MMDetection installations may skip these native component cases.
 """
 from pathlib import Path
 from inspect import signature
@@ -15,6 +14,7 @@ pytest.importorskip("avstack.config")
 from avstack.modules.perception.object2dfv import MMDetObjectDetector2D
 from avstack.modules.perception.object3d import MMDetObjectDetector3D
 from avsectester.closed_loop.avstacks.implemented.camera_forward_collision import CameraForwardCollisionAVStack
+from avsectester.closed_loop.avstacks.implemented.modular import register_carla_dataset
 
 
 def configured_options(avstack_type):
@@ -33,19 +33,8 @@ def image_detectors():
 
 def point_cloud_detectors():
     return [pytest.param(options["pipeline_cfg"]["perception"].get("model", "pointpillars"),
-                         options["pipeline_cfg"]["perception"].get("dataset", "kitti"),
-                         carla_metadata if options["pipeline_cfg"]["perception"].get(
-                             "dataset", "kitti").startswith("carla-") else standard_metadata, id=name)
+                         options["pipeline_cfg"]["perception"].get("dataset", "kitti"), id=name)
             for name, options in configured_options("ModularAVStack")]
-
-
-def carla_metadata():
-    from avsectester.closed_loop.avstacks.implemented.modular import register_carla_dataset
-    register_carla_dataset()
-
-
-def standard_metadata():
-    pass
 
 
 def detector_configuration(detector_type, model_name, detector_dataset):
@@ -80,14 +69,14 @@ def test_image_detector(model_name, detector_dataset):
     assert result is not None
 
 
-@pytest.mark.parametrize("model_name,detector_dataset,prepare_metadata", point_cloud_detectors())
-def test_point_cloud_detector(model_name, detector_dataset, prepare_metadata):
+@pytest.mark.parametrize("model_name,detector_dataset", point_cloud_detectors())
+def test_point_cloud_detector(model_name, detector_dataset):
     import torch
     api = pytest.importorskip("mmdet3d.apis")
     from mmdet3d.structures import Det3DDataSample, LiDARInstance3DBoxes
 
+    register_carla_dataset()
     config = detector_configuration(MMDetObjectDetector3D, model_name, detector_dataset)
-    prepare_metadata()
     model = api.init_model(config, checkpoint=None, device="cpu")
     sample = Det3DDataSample(metainfo={"box_type_3d": LiDARInstance3DBoxes})
     points = np.array([[5., .1, -.5, .8], [5.1, .2, -.4, .7],

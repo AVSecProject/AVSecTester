@@ -117,8 +117,7 @@ def test_reset(alpamayo_model_boundary, alpamayo_observations):
         avstack(observations[-1])
     avstack.reset(observations[-1])
     avstack(observations[-1])
-    # Nonuniform capture spacing is supported. Timestamped history replaces a fixed rate.
-    avstack(replace(observations[-1], t=.05, deliveries={}, state_estimates=()))
+    assert avstack(replace(observations[-1], t=.05, deliveries={}, state_estimates=())).trajectory
     avstack.close()
 
 
@@ -242,7 +241,9 @@ def test_seed(alpamayo_model_boundary, alpamayo_observations):
         avstack.close()
     with pytest.raises(ValueError, match="seed"):
         AlpamayoAVStack(camera_ids=["front"], seed=-1)
-    # The default matches AlpaSim's Alpamayo 1.5 driver cameras.
+
+
+def test_default_camera_ids():
     assert set(AlpamayoAVStack(device="cpu").camera_ids) == {
         "camera_front_wide_120fov", "camera_front_tele_30fov",
         "camera_cross_left_120fov", "camera_cross_right_120fov"}

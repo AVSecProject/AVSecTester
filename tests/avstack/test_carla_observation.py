@@ -7,6 +7,7 @@ import pytest
 
 pytest.importorskip("avstack.config")
 pytest.importorskip("carla")
+pytest.importorskip("avcarla.geometry")
 
 from avcarla.geometry import CarlaReferenceFrame
 from avstack.geometry import GlobalOrigin3D
@@ -40,8 +41,9 @@ def test_copy_observation(native_sensor_case, make_ego):
         assert getattr(copied_sensor, name) == expected
     replacement = deepcopy(copied.calibration["sensor"])
     copied.set_calibration("sensor", replacement)
-    assert copied_sensor.calibration is copied.calibration["sensor"] is replacement
-    assert copied_sensor.reference is replacement.reference
+    assert copied.sensor_data["sensor"].calibration is replacement
+    assert copied.sensor_data["sensor"].reference is replacement.reference
+    assert copied_sensor.calibration is not replacement
     assert sensor.calibration is calibration
 
 

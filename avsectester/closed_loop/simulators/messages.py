@@ -22,8 +22,8 @@ def require_absolute_topic(name: str) -> None:
 class MessageStage:
     """One message topic's callback capabilities.
 
-    ``sensor`` identifies the native rig sensor when known. An observed stage exposes
-    the received message to read-only callbacks.
+    ``sensor`` identifies a native rig sensor, when the topic has one. ``modifiable`` allows
+    message replacement. A false value exposes the message to read-only callbacks.
     """
 
     sensor: str | None = None

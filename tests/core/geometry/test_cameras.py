@@ -32,7 +32,7 @@ def test_body_from_optical():
     np.testing.assert_array_equal(BODY_FROM_OPTICAL @ [1., 2., 3., 1.], [3., -1., -2., 1.])
 
 
-# Front wide camera of NuRec scene 023b7fcc (rig_trajectories.json), order-2 and order-4 polynomials.
+# A calibrated wide lens with second- and fourth-order windshield polynomials.
 SCENE_WINDSHIELD = WindshieldDistortion(
     (-0.00353792007, 1.00160002708, 4.7415298e-05, -0.00278471992, 0.00146400998, 0.00199894002),
     (0.00510897022, 0.00200385996, 0.00182037998, -0.00112585002, 0.00046490799, 1.01366996765,
@@ -60,7 +60,7 @@ def test_windshield_distortion():
     lens = FThetaCamera(50, 40, (0, 50), 100, 80, (0, .02), max_angle=1.5)
     seen = FThetaCamera(50, 40, (0, 50), 100, 80, (0, .02), max_angle=1.5, windshield=model)
     np.testing.assert_allclose(seen.project(ray), lens.project(model.distort(ray)))
-    # The calibrated inverse undoes the forward deflection; unprojection returns scene rays.
+    # The calibrated inverse undoes the forward deflection, and unprojection returns scene rays.
     np.testing.assert_allclose(SCENE_WINDSHIELD.undistort(SCENE_WINDSHIELD.distort(unit)), unit, atol=2e-4)
     scene = FThetaCamera(962.25, 744.12, (0., 940.31, 12.61, -30.50, -1.09, .31), 1920, 1080,
                          (0., 1.0637e-3, -1.7729e-8, 4.7888e-11, -1.2797e-14, 9.6638e-18),

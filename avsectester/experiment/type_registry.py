@@ -97,7 +97,7 @@ def _discover_attacks() -> tuple[tuple[str, ...], dict[str, str]]:
 def available_attacks() -> tuple[str, ...]:
     """List exactly the exported Attack classes accepted by class-name lookup.
 
-    Attack folders that fail to import are omitted; an unknown type's error message names them.
+    Attack folders that fail to import are omitted. An unknown type's error message names them.
     """
     return _discover_attacks()[0]
 

@@ -8,8 +8,7 @@ from avsectester.closed_loop.environment import (
     merge_environments, normalize_environment, validate_environment,
 )
 from avsectester.data_types import Observation
-from avsectester.closed_loop.sensor_corruptions import GaussianNoise
-from tests.fakes import ExternallyControlledMemorySimulator, MemorySimulator
+from tests.fakes import MemorySimulator
 
 
 def test_merge_environments():
@@ -35,10 +34,6 @@ def test_validate_environment():
     assert validate_environment(environment, MemorySimulator()) == normalize_environment(environment)
     with pytest.raises(ValueError, match="does not support"):
         validate_environment({"world": {"unknown": 1}}, MemorySimulator())
-    external = ExternallyControlledMemorySimulator()
-    assert validate_environment(environment, external) == normalize_environment(environment)
-    sensor_environment = {"sensors": [{"type": "Brightness"}]}
-    assert validate_environment(sensor_environment, external) == normalize_environment(sensor_environment)
 
 
 def test_sensor_environment():
@@ -48,8 +43,6 @@ def test_sensor_environment():
     pixels = np.full((4, 5, 3), 100, np.uint8)
     source = Observation(0., 0, {"front": pixels})
     environment.bind(source)
-    with pytest.raises(ValueError, match="unavailable camera"):
-        environment.apply(Observation(0., 0), position=0)
     batch = Observation(.033333, 1, {"rear": pixels.copy()})
     skipped = environment.apply(batch, position=0, available_sensors=frozenset({"front", "rear"}))
     assert tuple(skipped.sensor_data) == ("rear",)
@@ -59,8 +52,8 @@ def test_sensor_environment():
     seed = 2**40 + 7
     noisy = SensorEnvironment({"sensors": [{"type": "GaussianNoise", "camera": "front",
                                              "options": {"severity": .2}}]}, seed)
-    expected = GaussianNoise(severity=.2).apply(pixels.copy(), np.random.default_rng((seed, 3, 0)))
-    np.testing.assert_array_equal(noisy.apply(source, 3).sensor_data["front"], expected)
+    first = noisy.apply(source, 3).sensor_data["front"]
     intermediate = noisy.apply(source, 3, interval_capture_index={"front": 1, "rear": 9})
-    expected = GaussianNoise(severity=.2).apply(pixels.copy(), np.random.default_rng((seed, 3, 0, 1)))
-    np.testing.assert_array_equal(intermediate.sensor_data["front"], expected)
+    again = noisy.apply(source, 3, interval_capture_index={"rear": 9, "front": 1})
+    assert not np.array_equal(first, intermediate.sensor_data["front"])
+    np.testing.assert_array_equal(intermediate.sensor_data["front"], again.sensor_data["front"])

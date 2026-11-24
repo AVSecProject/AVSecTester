@@ -11,7 +11,7 @@ experiment workflow.
 
 ![Framework architecture](docs/assets/architecture.png)
 
-## Quick start
+## Quickstart
 
 Complete [installation](docs/getting-started/installation.md) first, including Compose settings,
 the required model weights and the selected dataset.
@@ -54,8 +54,10 @@ The [documentation index](docs/README.md) lists the full reading paths.
 
 The framework supplies CARLA closed-loop simulation, NuRec closed-loop reconstruction with
 optional reactive traffic, and recorded nuScenes playback. Driving systems include
-`ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack` and `RuleBasedAVStack`. See
-the [supported combinations](docs/concepts/architecture.md#supported-configurations).
+`ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack` and `RuleBasedAVStack`.
+CARLA experiments can [host Autoware](docs/examples/hosted-autoware.md) in LiDAR mode with native
+ROS 2 and read, modify and record its ROS topics. See the
+[supported combinations](docs/concepts/architecture.md#supported-configurations).
 
 Defense treatments are **Not yet implemented.** See
 [defenses](docs/development/TODO.md#defenses).

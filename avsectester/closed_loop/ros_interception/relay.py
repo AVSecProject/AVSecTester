@@ -17,13 +17,12 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.serialization import deserialize_message
-from rosidl_runtime_py import set_message_fields
 from rosidl_runtime_py.utilities import get_message
 
 from .channel import RelayConnection
 from .declaration import private_topic
 from .projection import Pose, PoseDelta, ProjectionQueue
-from .ros_messages import header_stamp_ns, publishable_fields, to_fields
+from .ros_messages import header_stamp_ns, to_fields, to_message
 
 
 _TF_TYPE = "tf2_msgs/msg/TFMessage"
@@ -334,8 +333,7 @@ class _Relay(Node):
         outside_run = reply.get("outside_run", False)
         replacement = None
         if not outside_run and "fields" in reply:
-            replacement = topic.message_type()
-            set_message_fields(replacement, publishable_fields(reply["fields"], topic.type_name))
+            replacement = to_message(reply["fields"], topic.message_type, topic.type_name)
         if self.tf is not None and self.tf.pose_topic == topic.name:
             self.tf.pose(pending.stamp_ns, pending.message, replacement)
         topic.publisher.publish(replacement if replacement is not None else pending.raw)

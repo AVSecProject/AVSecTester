@@ -20,6 +20,8 @@ def test_box_ray_distances():
                                   [1., 1., 1.])
     np.testing.assert_array_equal(box_ray_distances(pose, (0., 2., 2.), rays, np.eye(4)),
                                   [np.inf, np.inf, np.inf])
+    np.testing.assert_array_equal(box_ray_distances(pose, (2., 2., 0.), rays, np.eye(4)),
+                                  [5., np.inf, np.inf])
     with pytest.raises(ValueError, match="extent"):
         box_ray_distances(pose, (-1., 2., 2.), rays, np.eye(4))
 
@@ -47,7 +49,7 @@ def test_oriented_boxes_distance():
     cases = [
         # Horizontal gaps of 3 m and 4 m give a 5 m corner-to-corner distance.
         (first, (2., 2., 1.), shifted, (2., 2., 8.), 5.),
-        # The rotated square's left vertex meets the first square's right edge at y=0.
+        # The rotated square's closest vertex and the first square's right edge are on y=0.
         (first, (2., 2., 1.), rotated, (2., 2., 1.), 3.-np.sqrt(2.)),
         (first, (2., 2., 1.), make_pose(np.eye(3), (2., 0., 0.)), (2., 2., 1.), 0.),
         (first, (2., 2., 1.), make_pose(np.eye(3), (1., 0., 0.)), (2., 2., 1.), 0.),

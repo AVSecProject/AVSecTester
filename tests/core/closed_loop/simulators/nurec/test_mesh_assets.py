@@ -4,14 +4,12 @@ import numpy as np
 
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer
 from avsectester.rendering import MeshAsset, MeshPart, PlacedObject
-from tests.fakes import NuRecRpcBoundary
-
-TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
+from tests.fakes import TRACK_FROM_PLY, NuRecRpcBoundary, decode_gaussian_ply
 
 
 def _rows(paths):
     path, = paths
-    return np.frombuffer(path.read_bytes().split(b"end_header\n", 1)[1], "<f4").reshape(-1, 14)
+    return decode_gaussian_ply(path.read_bytes())
 
 
 def _points_and_colors(rows, extent):
@@ -64,15 +62,6 @@ def test_mesh_scene_asset(monkeypatch, tmp_path):
         np.testing.assert_allclose(rgb[top], np.tile([200., 0., 0.], (top.sum(), 1)), atol=1e-4)
         np.testing.assert_allclose(rgb[bottom], np.tile([0., 0., 200.], (bottom.sum(), 1)),
                                    atol=1e-4)
-        known = set(tmp_path.glob("*.ply"))
-        renderer.render_object_coverage(np.eye(4), 0, "front", placed, ())
-        copies = set(tmp_path.glob("*.ply")) - known
-        assert len(copies) == 2
-        for path in copies:
-            copy = _rows([path])
-            np.testing.assert_array_equal(copy[:, :3], rows[:, :3])
-            np.testing.assert_array_equal(copy[:, 6:], rows[:, 6:])
-
         known = set(tmp_path.glob("*.ply"))
         renderer.scene_object_tracks((PlacedObject("colored", colored, pose),))
         points, rgb = _points_and_colors(_rows(set(tmp_path.glob("*.ply")) - known),

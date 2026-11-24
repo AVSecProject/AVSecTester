@@ -541,7 +541,7 @@ def _group_details(root: Path, report: Mapping[str, Any], manifest: Mapping[str,
         rows: list[Any] = [["status", None, *[row["status"] for row in treatments.values()]],
                            ["attack", None, *[group.get("treatment_attacks", {}).get(name) or "none"
                                                for name in treatments]]]
-        # One footnote per (field, reason); treatments sharing a reason share its number.
+        # One footnote per (field, reason). Treatments sharing a reason share its number.
         reasons: dict[tuple[str, str], list[str]] = {}
         for specification, fields in _sections(report, "run"):
             rows.append(_Html(f'<tr class="metric-group"><th colspan="{len(treatments) + 2}">'

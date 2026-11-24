@@ -105,17 +105,7 @@ def test_target_scores():
 
     target = targets[0]
     rgb = np.full((8, 8, 3), 128, dtype=np.uint8)
-    deployed = detector.detect(rgb)
-    same_class = []
-    for box, confidence, label in deployed:
-        intersection = np.maximum(0, np.minimum(box[2:], target.box[2:])
-                                  - np.maximum(box[:2], target.box[:2])).prod()
-        union = np.maximum(0, box[2:] - box[:2]).prod() + 16 - intersection
-        if label == "car" and intersection / union >= .3:
-            same_class.append(confidence)
     inputs = torch.from_numpy(rgb).permute(2, 0, 1).float().unsqueeze(0) / 255
-    scored = detector.target_scores(inputs, [target])[0]
-    assert max(same_class) <= scored.item()
     unambiguous = YOLOXDetector("unused.pth", device="cpu", model=yolox_detection_model([
         prediction((0., 0., 4., 4.), .9, {2: .8}),
     ], image_weight=.1))

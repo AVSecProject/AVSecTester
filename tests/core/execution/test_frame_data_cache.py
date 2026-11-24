@@ -7,6 +7,7 @@ from avsectester.execution.frame_data_cache import FrameDataCache
 from avsectester.closed_loop.simulators.base import FrameDataSequence
 from avsectester.data_types import ActorState
 from avsectester.datasets import FrameData, FrameReference, ScenarioStart
+from tests.fakes import MemoryDataset
 
 
 def generated_sequence():
@@ -19,7 +20,7 @@ def failed_generation():
 
 
 def test_key():
-    start = ScenarioStart("memory", "scene", FrameReference("scene", 0, 0, 0.), {"time_step": .1})
+    start = ScenarioStart(MemoryDataset.__name__, "scene", FrameReference("scene", 0, 0, 0.), {"time_step": .1})
     identity = {"type": "MemorySimulator", "environment": {"world": {}}}
     key = FrameDataCache.key(start, identity, 7)
     assert key == FrameDataCache.key(start, dict(reversed(list(identity.items()))), 7)
@@ -28,12 +29,12 @@ def test_key():
 
 
 def test_get_or_generate():
-    start = ScenarioStart("memory", "scene", FrameReference("scene", 0, 0, 0.), {"time_step": .1})
+    start = ScenarioStart(MemoryDataset.__name__, "scene", FrameReference("scene", 0, 0, 0.), {"time_step": .1})
     key = FrameDataCache.key(start, {"type": "MemorySimulator"}, 7)
     cache = FrameDataCache()
     with pytest.raises(RuntimeError, match="generation failed"):
         cache.get_or_generate(key, failed_generation)
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match=key):
         cache.get(key)
     incomplete = FrameDataSequence(generated_sequence().frames[1:], {}, {})
     with pytest.raises(ValueError, match="contiguous frame positions"):
@@ -41,6 +42,6 @@ def test_get_or_generate():
     generated = cache.get_or_generate(key, generated_sequence)
     generated.frames[0].ego.pose[:] = 0
     np.testing.assert_array_equal(cache.get(key).frames[0].ego.pose, np.eye(4))
-    # A published sequence is reused; the failing generator is not needed again.
+    # Reuse the published sequence.
     np.testing.assert_array_equal(cache.get_or_generate(key, failed_generation).frames[0].ego.pose,
                                   np.eye(4))

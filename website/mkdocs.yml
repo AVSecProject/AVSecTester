@@ -36,6 +36,7 @@ nav:
       - Defenses: docs/guides/defenses.md
   - Examples:
       - docs/examples/README.md
+      - Hosted Autoware: docs/examples/hosted-autoware.md
       - Stop-sign patch attack: docs/examples/stop-sign-patch.md
       - Physical patch attack: docs/examples/physical-patch.md
       - Object insertion attack: docs/examples/image-insertion.md

@@ -10,12 +10,14 @@
 
 Complete [Installation](installation.md), including the matching AdditionalMaps content pack,
 and select available CARLA server and experiment GPUs in the Compose settings.
-The supplied CARLA configurations contain `Town03_Opt` and `Town10HD_Opt` recipes.
+The supplied phantom configuration contains `Town03_Opt` and `Town10HD_Opt` recipes.
 Copy the configuration first:
 
 ```bash
 cp configs/carla_phantom.yaml configs/my_carla.yaml
 ```
+
+Experiments can occupy GPUs for hours. Set a small `runs.decision_steps` for your first run.
 
 Edit `configs/my_carla.yaml`: `simulator.options.client.connect_ip` and
 `simulator.options.client.connect_port` select the endpoint, and
@@ -30,11 +32,15 @@ docker compose exec carla-experiment avsectester run configs/my_carla.yaml
 The command prepares the configured attacks, executes treatments and evaluates saved evidence.
 Workflow and resume behavior are described in [Experiments](../guides/experiments.md).
 
+For CARLA with a native ROS 2 driving system, follow
+[Hosted Autoware](../examples/hosted-autoware.md).
+
 ## Run a NuRec comparison
 
 Place NuRec 26.01 scenes under `data/nurec/26.01_release` and prepare the YOLOX weights listed in
 [Installation](installation.md#yolox-detector-weights).
 The supplied `split.train_segments: 5` requires at least six selected approaches.
+See [Data split](../reference/configuration.md#data-split).
 Copy the configuration within `configs/`:
 
 ```bash
@@ -82,7 +88,7 @@ For NuRec, use the same command through `nurec-experiment`:
 docker compose run --rm nurec-experiment run CONFIG.yaml --prepared RESULTS_DIRECTORY
 ```
 
-See [Saved-preparation compatibility](../reference/configuration.md#saved-preparation-compatibility).
+[Saved preparation](../reference/configuration.md#saved-preparation-compatibility) describes reuse.
 To continue interrupted preparation or execution, use `--resume`:
 
 ```bash

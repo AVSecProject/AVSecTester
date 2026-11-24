@@ -151,8 +151,8 @@ def replica_asset(
     ):
         warnings.warn(
             f"Stop sign {control.id}: map height {control.extent[2]:.6g} m differs from "
-            f"texture-derived panel height {asset.extent[2]:.6g} m; "
-            f"using scaled width {width_m:.6g} m "
+            f"texture-derived panel height {asset.extent[2]:.6g} m. "
+            f"Using scaled width {width_m:.6g} m "
             f"(map width {control.extent[1]:.6g} m, width_scale {width_scale:.6g})",
             UserWarning, stacklevel=2,
         )
@@ -166,7 +166,7 @@ def replica_pose(
     """Place a panel in front of the mapped face center using the selected orientation.
 
     ``upright`` projects the mapped +X normal onto the horizontal plane and uses world
-    +Z as its up axis; ``map`` preserves the mapped rotation. Offset the face center along
+    +Z as its up axis. ``map`` preserves the mapped rotation. Offset the face center along
     the selected +X, then lower the ObjectAsset origin by half the panel height along
     the selected +Z. The mapped face center itself is never corrected.
     """

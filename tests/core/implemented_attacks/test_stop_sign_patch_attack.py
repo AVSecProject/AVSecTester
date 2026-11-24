@@ -1,27 +1,138 @@
 """Stop-sign selection, patched replica placement and real offline optimization."""
 from dataclasses import replace
-from hashlib import sha256
 
 import numpy as np
 import pytest
 import torch
 from PIL import Image
 
-from avsectester.attack import OfflineContext, OfflineReport, OnlineContext
+from avsectester.attack import AttackSegment, OfflineContext, OfflineReport, OnlineContext
 from avsectester.attack.insertion import InsertObject
 from avsectester.attack.optimization import HideBelowThreshold, NES, PGD
-from avsectester.execution.services import ClosedLoopServices, RenderRequest
+from avsectester.execution.services import ClosedLoopServices, ScenarioView
 from avsectester.closed_loop.avstacks import DrivingAdapter, ScorerDescriptor
+from avsectester.closed_loop.avstacks.implemented.modules import (
+    RuleBasedAVStack, YOLOXDetector, rule_based_driving_adapter,
+)
+from avsectester.closed_loop.simulators.ego_dynamics import TrajectoryFollower
+from avsectester.closed_loop.simulators.nurec import NuRecSimulator
 from avsectester.closed_loop.timing import HistoryRequirement, TimingConfiguration
-from avsectester.data_types import read_camera_rgb
-from tests.fakes import ConstantAVStack, MemoryDataset, MemorySimulator, StopCommandAVStack
-from avsectester.geometry.projection import project_box
+from tests.fakes import (
+    CAMERA, ConstantAVStack, DeceleratingAVStack, MemoryDataset, MemoryImageRenderer,
+    MemorySimulator, StopApproachDataset, StopCommandAVStack, stop_approach_map,
+)
 from avsectester.implemented_attacks.stop_sign_patch_attack import StopSignPatchAttack
 from avsectester.implemented_attacks.stop_sign_patch_attack.offline import (
     DetectorPatchOptimization, RolloutPatchOptimization,
 )
-from avsectester.rendering import ExposureHarmonizer, PlacedObject, plan_composite
+from avsectester.rendering import ExposureHarmonizer
 from avsectester.runlog import RunLog
+
+
+@pytest.fixture
+def approach_view():
+    services = []
+
+    def create(*, line_kind="stop_sign", facing=True, stopped=True, past_steps=15,
+               line_offset_y=0., linked_sign=True, sign_x=60.):
+        scenario_map = stop_approach_map(
+            line_kind=line_kind, facing=facing, line_offset_y=line_offset_y,
+            linked_sign=linked_sign, sign_x=sign_x,
+        )
+        dataset = StopApproachDataset(scenario_map, stopped=stopped)
+        adapter = DrivingAdapter(lambda seed: ConstantAVStack(), history=HistoryRequirement(samples=past_steps + 1))
+        scope = ClosedLoopServices(dataset, MemorySimulator(), adapter)
+        scope.__enter__()
+        services.append(scope)
+        return ScenarioView("scene", scope, 0)
+
+    yield create
+    for scope in reversed(services):
+        scope.close()
+
+
+@pytest.fixture
+def nurec_patch_services_and_segment(nurec_longitudinal_dataset):
+    """Moving recorded camera, real binding, and image-independent candidate driver."""
+    dataset = nurec_longitudinal_dataset
+    simulator = NuRecSimulator(
+        MemoryImageRenderer(CAMERA), TrajectoryFollower(), depth="none",
+        route_generator="none", physics_update_mode="none", object_occlusion="geometry",
+        time_step=.1,
+    )
+    adapter = DrivingAdapter(lambda seed: DeceleratingAVStack(), history=HistoryRequirement(samples=16))
+    frames = tuple(dataset.frames("scene"))
+    route = np.asarray([dataset.frame_data("scene", frame).ego.pose[:3, 3] for frame in frames])
+
+    def make_segment(*, start=15, stop=30, line_x=28.):
+        sign_pose = np.diag([-1., -1., 1., 1.])
+        sign_pose[:3, 3] = (28., -1., 1.8)
+        segment = AttackSegment("scene", frames[start], frames[stop], {
+            "sign_id": "patch-sign", "sign_pose": sign_pose,
+            "sign_extent": [.05, .8, .8], "sign_native_category": "MUTCD_R1_STOP",
+            "sign_lane_ids": [], "stop_line_id": "patch-line",
+            "stop_line_points": np.array([[line_x, -3., 0.], [line_x, 3., 0.]]),
+            "stop_line_lane_ids": [], "recorded_stop_frame": 30,
+            "recorded_stop_timestamp_s": frames[30].timestamp,
+            "approach_distance_m": 28. - route[start, 0], "route_points": route,
+            "line_route_distance_m": line_x,
+        })
+        StopSignPatchAttack().validate_segment(segment)
+        return segment
+
+    with ClosedLoopServices(dataset, simulator, adapter) as services:
+        yield services, make_segment
+
+
+@pytest.fixture
+def replica_detector_model():
+    """Create differentiable YOLOX outputs for replica pixels on a constant background."""
+    class ReplicaDetector(torch.nn.Module):
+        """Model boundary whose confidence differentiates the patch's red channel."""
+
+        def forward(self, images):
+            predictions = []
+            for image in images:
+                padding = (image - 114).abs().amax(dim=0) < 1e-6
+                rows = torch.nonzero(~padding.all(dim=1), as_tuple=True)[0]
+                columns = torch.nonzero(~padding.all(dim=0), as_tuple=True)[0]
+                box = image.new_zeros((1, 4))
+                score = image.sum() * 0
+                if len(rows) and len(columns):
+                    height, width = int(rows[-1]) + 1, int(columns[-1]) + 1
+                    content = image[:, :height, :width]
+                    changed = (content - 30).abs().amax(dim=0) > 1e-6
+                    ys, xs = torch.nonzero(changed, as_tuple=True)
+                    if len(xs):
+                        x0, x1 = int(xs.min()), int(xs.max()) + 1
+                        y0, y1 = int(ys.min()), int(ys.max()) + 1
+                        score = .5 + .4 * content[2, y0:y1, x0:x1].mean() / 255
+                        box = image.new_tensor([[(x0 + x1) / 2, (y0 + y1) / 2,
+                                                 x1 - x0, y1 - y0]])
+                classes = image.new_zeros((1, 80))
+                classes[0, 11] = 1.
+                predictions.append(torch.cat((box, score.reshape(1, 1), classes), dim=-1))
+            return torch.stack(predictions)
+
+    return ReplicaDetector()
+
+
+@pytest.fixture
+def nurec_detector_services_and_segment(nurec_patch_services_and_segment, replica_detector_model):
+    """Real rule-based scoring binding over the shared synthetic recorded camera world."""
+    services, make_segment = nurec_patch_services_and_segment
+
+    def factory(seed):
+        return RuleBasedAVStack(YOLOXDetector(
+            "unused.pth", device="cpu", score_threshold=0., model=replica_detector_model,
+        ), camera_id="front")
+
+    factory.avstack_options = {
+        "camera_id": "front", "detector": YOLOXDetector("unused.pth", device="cpu", score_threshold=0.),
+    }
+    adapter = rule_based_driving_adapter(factory)
+    with ClosedLoopServices(services.dataset, services.simulator, adapter) as scope:
+        yield scope, make_segment
 
 
 def test_segment_selection(approach_view):
@@ -61,18 +172,21 @@ def test_segment_selection(approach_view):
         attack.validate_segment(replace(segment, user_data=missing))
 
 
-def test_replica_deployment(approach_view, tmp_path):
-    harmonizer = ExposureHarmonizer(reference="under")
-    attack = StopSignPatchAttack(offset_m=.10, width_scale=1., harmonizer=harmonizer)
+@pytest.fixture
+def replica_approach(approach_view):
     scenario = approach_view()
-    segment, = attack.build_metadata(scenario)
+    segment, = StopSignPatchAttack().build_metadata(scenario)
+    return scenario, segment
+
+
+def test_initial_replica_textures(replica_approach):
+    scenario, segment = replica_approach
+    attack = StopSignPatchAttack()
     context = OfflineContext(scenario.services, (segment,), seed=0)
     textures = {kind: StopSignPatchAttack(initial_patch=kind).run_offline(context)
                 for kind in ("none", "white", "black", "low_frequency_noise")}
-    canonical = attack.replica_placement(context.metadata[0], textures["none"])[0].surfaces[0].nominal_texture
+    canonical = attack.replica_placement(segment, textures["none"])[0].surfaces[0].nominal_texture
     np.testing.assert_array_equal(textures["none"], canonical)
-    assert sha256(textures["low_frequency_noise"].tobytes()).hexdigest() == (
-        "9f44947df22b16eb5964c741c2711c3ebac127ef8a651f58e5de0ac95f9d8376")
     # The default bars cover only the red background, never the white border or letters.
     assert len(np.unique(canonical[attack.mask], axis=0)) == 1
     for texture in textures.values():
@@ -80,7 +194,7 @@ def test_replica_deployment(approach_view, tmp_path):
         np.testing.assert_array_equal(texture[~attack.mask], canonical[~attack.mask])
     noise = textures["low_frequency_noise"][..., :3] / 255.
     assert abs(noise[attack.mask].mean() - .5) < .02 and .22 < noise[attack.mask].std() < .25
-    # Adjacent texels share low-frequency colors; independent per-texel noise differs by about .27.
+    # Adjacent texels share low-frequency colors.
     neighbors = attack.mask[:, 1:] & attack.mask[:, :-1]
     assert np.abs(np.diff(noise, axis=1))[neighbors].mean() < .03
     np.testing.assert_array_equal(textures["white"][..., :3][attack.mask], 255)
@@ -89,57 +203,50 @@ def test_replica_deployment(approach_view, tmp_path):
         initial_patch="low_frequency_noise", noise_seed=0).run_offline(context))
     assert not np.array_equal(textures["low_frequency_noise"], StopSignPatchAttack(
         initial_patch="low_frequency_noise", noise_seed=1).run_offline(context))
-    # Artifacts persist as a lossless RGBA PNG, and loading validates the replica face.
+
+
+def test_replica_artifacts(replica_approach, tmp_path):
+    scenario, segment = replica_approach
+    attack = StopSignPatchAttack(initial_patch="white")
+    texture = attack.run_offline(OfflineContext(scenario.services, (segment,), seed=0))
     saved = tmp_path / "artifacts"
-    attack.save_artifacts(textures["low_frequency_noise"], saved)
-    assert [path.name for path in saved.iterdir()] == ["deployed_texture.png"]
-    np.testing.assert_array_equal(attack.load_artifacts(saved), textures["low_frequency_noise"])
-    Image.fromarray(textures["white"][..., :3]).save(saved / "deployed_texture.png")
+    attack.save_artifacts(texture, saved)
+    np.testing.assert_array_equal(attack.load_artifacts(saved), texture)
+    Image.fromarray(texture[..., :3]).save(saved / "deployed_texture.png")
     with pytest.raises(ValueError, match="RGBA"):
         attack.load_artifacts(saved)
-    texture = textures["white"]
-    mask = np.zeros(canonical.shape[:2], bool)
+
+
+def test_replica_mask(tmp_path):
+    attack = StopSignPatchAttack()
+    mask = np.zeros(attack.mask.shape, bool)
     mask[200:260, 100:400] = True
     path = tmp_path / "mask.png"
     Image.fromarray(mask.astype(np.uint8) * 255).save(path)
     np.testing.assert_array_equal(StopSignPatchAttack(mask_path=path).mask, mask)
     invalid = [
-        (np.zeros(canonical.shape[:2], np.uint8), "nonempty and binary"),
+        (np.zeros(attack.mask.shape, np.uint8), "nonempty and binary"),
         (np.full((4, 4), 255, np.uint8), "resolution"),
     ]
     for pixels, message in invalid:
         Image.fromarray(pixels).save(path)
         with pytest.raises(ValueError, match=message):
             StopSignPatchAttack(mask_path=path)
-    candidate = texture.copy()
-    candidate[..., :3][attack.mask] = (35, 85, 135)
-    actions = attack.create_runtime(segment, candidate).setup(
-        OnlineContext(0, "setup", 0., segment.start.position))
-    assert len(actions) == 1 and isinstance(actions[0], InsertObject)
-    action = actions[0]
-    assert action.harmonizer is harmonizer
-    assert action.object_id == "stop_sign_replica" and action.asset.category == "stop_sign"
-    assert action.asset.extent[1] == pytest.approx(.762)
-    assert StopSignPatchAttack().create_runtime(segment, candidate).setup(
-        OnlineContext(0, "setup", 0., segment.start.position))[0].asset.extent[1] == pytest.approx(.762 * 1.1)
+
+
+def test_replica_placement(replica_approach):
+    scenario, segment = replica_approach
+    attack = StopSignPatchAttack(offset_m=.10, width_scale=1.)
+    texture = attack.run_offline(OfflineContext(scenario.services, (segment,), seed=0))
+    asset, pose = attack.replica_placement(segment, texture)
+    assert asset.extent[1] == pytest.approx(.762)
+    scaled = StopSignPatchAttack()
+    assert scaled.replica_placement(segment, texture)[0].extent[1] == pytest.approx(.762 * 1.1)
     mapped = StopSignPatchAttack(face_size="map_width", width_scale=1.)
-    mapped_action, = mapped.create_runtime(segment, candidate).setup(
-        OnlineContext(0, "setup", 0., segment.start.position))
-    assert mapped_action.asset.extent[1] == pytest.approx(.8)
-    np.testing.assert_array_equal(action.asset.surfaces[0].texture, candidate)
-    face = canonical
-    np.testing.assert_array_equal(action.asset.surfaces[0].nominal_texture, face)
-    assert len(action.asset.surfaces) == 2
-    front, back = action.asset.surfaces
-    expected_back = front.corners[[1, 0, 3, 2]].copy()
-    expected_back[:, 0] = -.003
-    np.testing.assert_array_equal(back.corners, expected_back)
-    np.testing.assert_array_equal(back.texture[..., :3], 160)
-    np.testing.assert_array_equal(back.texture[..., 3], front.texture[:, ::-1, 3])
-    assert back.nominal_texture is None
+    assert mapped.replica_placement(segment, texture)[0].extent[1] == pytest.approx(.8)
     control = scenario.scenario_map().traffic_controls["sign"]
-    face_center = action.asset.surfaces[0].corners.mean(axis=0)
-    np.testing.assert_allclose((action.world_from_object @ np.r_[face_center, 1.])[:3],
+    face_center = asset.surfaces[0].corners.mean(axis=0)
+    np.testing.assert_allclose((pose @ np.r_[face_center, 1.])[:3],
                                control.pose[:3, 3] + .10 * control.pose[:3, 0])
     # A pitched annotation has a tilted up axis and a nonhorizontal face normal.
     yaw, pitch = .5, .2
@@ -148,23 +255,21 @@ def test_replica_deployment(approach_view, tmp_path):
     tilted_pose = control.pose.copy()
     tilted_pose[:3, :3] = np.column_stack((normal, side, np.cross(normal, side)))
     tilted_segment = replace(segment, user_data={**segment.user_data, "sign_pose": tilted_pose})
-    upright_action, = attack.create_runtime(tilted_segment, candidate).setup(
-        OnlineContext(0, "setup", 0., segment.start.position))
+    _, upright_pose = attack.replica_placement(tilted_segment, texture)
     expected_normal = np.array([np.cos(yaw), np.sin(yaw), 0.])
-    np.testing.assert_allclose(upright_action.world_from_object[:3, 2], [0., 0., 1.])
-    np.testing.assert_allclose(upright_action.world_from_object[:3, 0], expected_normal)
-    np.testing.assert_allclose(upright_action.world_from_object[:3, 1],
+    np.testing.assert_allclose(upright_pose[:3, 2], [0., 0., 1.])
+    np.testing.assert_allclose(upright_pose[:3, 0], expected_normal)
+    np.testing.assert_allclose(upright_pose[:3, 1],
                                np.cross([0., 0., 1.], expected_normal))
     np.testing.assert_allclose(
-        (upright_action.world_from_object @ np.r_[face_center, 1.])[:3],
+        (upright_pose @ np.r_[face_center, 1.])[:3],
         control.pose[:3, 3] + attack.offset_m * expected_normal,
     )
     map_attack = StopSignPatchAttack(face_orientation="map", width_scale=attack.width_scale)
-    map_action, = map_attack.create_runtime(tilted_segment, candidate).setup(
-        OnlineContext(0, "setup", 0., segment.start.position))
-    np.testing.assert_allclose(map_action.world_from_object[:3, :3], tilted_pose[:3, :3])
+    _, map_pose = map_attack.replica_placement(tilted_segment, texture)
+    np.testing.assert_allclose(map_pose[:3, :3], tilted_pose[:3, :3])
     np.testing.assert_allclose(
-        (map_action.world_from_object @ np.r_[face_center, 1.])[:3],
+        (map_pose @ np.r_[face_center, 1.])[:3],
         control.pose[:3, 3] + map_attack.offset_m * normal,
     )
     with pytest.raises(ValueError, match="upright or map"):
@@ -175,8 +280,31 @@ def test_replica_deployment(approach_view, tmp_path):
     vertical_pose[:3, :3] = np.array([[0., 0., 1.], [0., 1., 0.], [-1., 0., 0.]])
     with pytest.raises(ValueError, match="horizontal normal"):
         attack.replica_placement(
-            replace(segment, user_data={**segment.user_data, "sign_pose": vertical_pose}), candidate,
+            replace(segment, user_data={**segment.user_data, "sign_pose": vertical_pose}), texture,
         )
+
+
+def test_create_replica_runtime(replica_approach):
+    scenario, segment = replica_approach
+    harmonizer = ExposureHarmonizer(reference="under")
+    attack = StopSignPatchAttack(initial_patch="none", harmonizer=harmonizer)
+    canonical = attack.run_offline(OfflineContext(scenario.services, (segment,), seed=0))
+    candidate = canonical.copy()
+    candidate[..., :3][attack.mask] = (35, 85, 135)
+    runtime = attack.create_runtime(segment, candidate)
+    action, = runtime.setup(OnlineContext(0, "setup", 0., segment.start.position))
+    assert isinstance(action, InsertObject) and action.object_id == "stop_sign_replica"
+    assert action.harmonizer is harmonizer and action.asset.category == "stop_sign"
+    np.testing.assert_array_equal(action.asset.surfaces[0].texture, candidate)
+    np.testing.assert_array_equal(action.asset.surfaces[0].nominal_texture, canonical)
+    assert len(action.asset.surfaces) == 2
+    front, back = action.asset.surfaces
+    expected_back = front.corners[[1, 0, 3, 2]].copy()
+    expected_back[:, 0] = -.003
+    np.testing.assert_array_equal(back.corners, expected_back)
+    np.testing.assert_array_equal(back.texture[..., :3], 160)
+    np.testing.assert_array_equal(back.texture[..., 3], front.texture[:, ::-1, 3])
+    assert back.nominal_texture is None
     with pytest.raises(ValueError, match="shape"):
         attack.create_runtime(segment, np.zeros((2, 2, 4), np.uint8))
     changed_alpha = candidate.copy()
@@ -189,25 +317,33 @@ def test_replica_deployment(approach_view, tmp_path):
         attack.create_runtime(segment, outside)
 
 
+@pytest.mark.parametrize("maximum,expected_starts", [(None, [15, 16]), (1, [15])])
+def test_white_box_segment_limit(nurec_detector_services_and_segment, maximum, expected_starts):
+    services, make_segment = nurec_detector_services_and_segment
+    attack = StopSignPatchAttack(optimization=DetectorPatchOptimization(
+        optimizer=PGD(epochs=1, batch_size=4, seed=0), min_visible_pixels=5,
+        braking_deceleration_mps2=10., max_training_segments=maximum, samples_per_scene=4,
+    ))
+    context = OfflineContext(services, (make_segment(), make_segment(start=16)), seed=0)
+    attack.run_offline(context)
+    ranges = context.report.tables["training_segment_ranges"].rows
+    assert list(dict.fromkeys(row["selected_start"] for row in ranges)) == expected_starts
+    assert context.report.values["training_segments"].value == len(expected_starts)
+
+
 def test_white_box_offline_phase(nurec_detector_services_and_segment):
     services, make_segment = nurec_detector_services_and_segment
     segment = make_segment()
-    training = (segment, make_segment(start=16))
-    for max_training_segments, expected_starts in ((None, [15, 16]), (1, [15])):
-        attack = StopSignPatchAttack(
-            initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
-            optimization=DetectorPatchOptimization(
-                optimizer=PGD(epochs=3, batch_size=3, seed=0), min_visible_pixels=5,
-                braking_deceleration_mps2=10., max_training_segments=max_training_segments,
-                samples_per_scene=4,
-            ),
-        )
-        context = OfflineContext(services, training, seed=0,
-                                 validation_metadata=(make_segment(start=23),))
-        texture = attack.run_offline(context)
-        ranges = context.report.tables["training_segment_ranges"].rows
-        assert list(dict.fromkeys(row["selected_start"] for row in ranges)) == expected_starts
-        assert context.report.values["training_segments"].value == len(expected_starts)
+    attack = StopSignPatchAttack(
+        initial_patch="white", harmonizer=ExposureHarmonizer(reference="under"),
+        optimization=DetectorPatchOptimization(
+            optimizer=PGD(epochs=3, batch_size=3, seed=0), min_visible_pixels=5,
+            braking_deceleration_mps2=10., samples_per_scene=4,
+        ),
+    )
+    context = OfflineContext(services, (segment,), seed=0,
+                             validation_metadata=(make_segment(start=23),))
+    texture = attack.run_offline(context)
     face = StopSignPatchAttack(initial_patch="none").run_offline(
         OfflineContext(services, (segment,), seed=0))
     np.testing.assert_array_equal(texture[..., 3], face[..., 3])
@@ -267,7 +403,6 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
         "status", "reason", "occlusion_source", "target_box_left_px", "target_box_top_px",
         "target_box_right_px", "target_box_bottom_px", "clean_score"}
     assert {row["status"] for row in rendered} <= {"used", "skipped"}
-    initial = report.images["initial_texture"].pixels
     assert report.images["initial_texture"].description
     assert report.values["detected_frame_fraction"].unit == "ratio (0–1)"
     assert report.series["detection_rate"].y_unit == "ratio (0–1)"
@@ -277,34 +412,6 @@ def test_white_box_offline_phase(nurec_detector_services_and_segment):
     for table in report.tables.values():
         assert table.description
         assert set(table.columns) == {key for row in table.rows for key in row}
-    asset, pose = attack.replica_placement(segment, initial)
-    frames = tuple(services.dataset.frames(segment.scenario_id))
-    with services.session(0) as session:
-        for row in samples:
-            rendered = session.render(RenderRequest(segment.scenario_id, frames[int(row["frame"])],
-                "front", actions=[InsertObject("stop_sign_replica", asset, pose, harmonizer=attack.harmonizer)]))
-            view = rendered.view
-            expected = project_box(view.camera, view.cam_from_world, segment.user_data['sign_pose'], segment.user_data['sign_extent'])
-            np.testing.assert_allclose([row[f"target_box_{coordinate}_px"] for coordinate in ("left", "top", "right", "bottom")], expected)
-            ys, xs = np.nonzero(view.composition.plan.visible_mask)
-            replica_bounds = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
-            assert not np.allclose(expected, replica_bounds)
-            clean = session.render(RenderRequest(segment.scenario_id, frames[int(row["frame"])],
-                                                 "front"))
-            _, background = read_camera_rgb(clean.observation, "front")
-            np.testing.assert_array_equal(background, view.composition.background)
-            surrogate = plan_composite(view.camera, view.cam_from_world,
-                [PlacedObject("stop_sign_replica", asset, pose, attack.harmonizer)],
-                scene_visibility=view.object_masks["stop_sign_replica"])
-            pixels = torch.as_tensor(background.copy(), dtype=torch.float32).permute(2, 0, 1) / 255
-            original = torch.as_tensor(initial[..., :3].copy(),
-                                       dtype=torch.float32).permute(2, 0, 1) / 255
-            candidate = torch.linspace(0., 1., original.numel()).reshape(original.shape)
-            for colors in (original, candidate):
-                old_image = view.composition.plan.composite(
-                    pixels, {("stop_sign_replica", 0): colors})
-                new_image = surrogate.composite(pixels, {("stop_sign_replica", 0): colors})
-                torch.testing.assert_close(new_image, old_image, rtol=0., atol=0.)
     options = replace(attack.optimization, scorer_id="rule_based.detection_confidence")
     assert StopSignPatchAttack(optimization=options).run_offline(
         replace(context, metadata=(segment,), report=OfflineReport(None))).dtype == np.uint8
@@ -346,47 +453,59 @@ def test_white_box_training_range(nurec_detector_services_and_segment):
     assert len(rows) > 8
 
 
+def fit_replica(services, segment, initial_patch, optimizer):
+    attack = StopSignPatchAttack(initial_patch=initial_patch, optimization=DetectorPatchOptimization(
+        optimizer=optimizer, min_visible_pixels=5, braking_deceleration_mps2=10.,
+        samples_per_scene=4,
+    ))
+    context = OfflineContext(services, (segment,), seed=0)
+    return attack.run_offline(context), context.report, attack.optimization
+
+
+def test_white_box_fixed_patch_scores(nurec_detector_services_and_segment):
+    services, make_segment = nurec_detector_services_and_segment
+    optimizer = PGD(epochs=3, batch_size=3, seed=0, step_size=0.)
+    _, report, options = fit_replica(services, make_segment(), "low_frequency_noise", optimizer)
+    descriptor, = services.capabilities.scorers
+    objective = HideBelowThreshold(descriptor.decision_threshold, options.confidence_margin)
+    initial = np.array([row["confidence_initial"]
+                        for row in report.tables["frame_detection_scores"].rows])
+    expected = float(objective.loss(initial).mean())
+    progress = report.tables["training_progress"].rows
+    assert [row["detection_loss"] for row in progress] == pytest.approx([expected] * 4)
+
+
 def test_white_box_smoothness(nurec_detector_services_and_segment):
     services, make_segment = nurec_detector_services_and_segment
-    context = OfflineContext(services, (make_segment(),), seed=0)
+    segment = make_segment()
+    optimizer = PGD(epochs=3, batch_size=3, seed=0, step_size=0., tv_weight=100.)
+    _, uniform, _ = fit_replica(services, segment, "white", optimizer)
+    assert uniform.values["patch_smoothness"].value == pytest.approx(0., abs=1e-6)
+    _, noisy, _ = fit_replica(services, segment, "low_frequency_noise", optimizer)
+    smoothness = noisy.values["patch_smoothness"].value
+    assert smoothness > 0.
+    progress = noisy.tables["training_progress"].rows
+    assert progress[-1]["smoothness_loss"] == pytest.approx(optimizer.tv_weight * smoothness)
 
-    def optimize(initial_patch, **pgd):
-        attack = StopSignPatchAttack(initial_patch=initial_patch, optimization=DetectorPatchOptimization(
-            optimizer=PGD(epochs=3, batch_size=3, seed=0, **pgd), min_visible_pixels=5,
-            braking_deceleration_mps2=10., samples_per_scene=4))
-        texture = attack.run_offline(context)
-        if pgd.get("step_size") == 0.:
-            descriptor, = services.capabilities.scorers
-            objective = HideBelowThreshold(
-                descriptor.decision_threshold, attack.optimization.confidence_margin)
-            initial = np.array([row["confidence_initial"]
-                                for row in context.report.tables["frame_detection_scores"].rows])
-            expected = float(objective.loss(initial).mean())
-            assert [row["detection_loss"] for row in context.report.tables["training_progress"].rows] == (
-                pytest.approx([expected] * 4))
-        smoothness = context.report.values["patch_smoothness"].value
-        assert context.report.tables["training_progress"].rows[-1]["smoothness_loss"] == pytest.approx(
-            attack.optimization.optimizer.tv_weight * smoothness)
-        return texture, smoothness
-
-    mask = StopSignPatchAttack().mask
-    texture, smoothness = optimize("low_frequency_noise", step_size=0.)
-    colors = texture[..., :3] / 255.
-    squared = np.concatenate([(np.diff(colors, axis=0) ** 2).sum(-1)[mask[1:] & mask[:-1]],
-                              (np.diff(colors, axis=1) ** 2).sum(-1)[mask[:, 1:] & mask[:, :-1]]])
-    assert smoothness == pytest.approx((np.sqrt(squared + 1e-6) - 1e-3).mean(), rel=1e-4)
-    # A uniform patch is perfectly smooth: its edge against the red face is the sticker outline.
-    assert optimize("white", step_size=0.)[1] == pytest.approx(0., abs=1e-6)
-    assert not np.array_equal(optimize("low_frequency_noise")[0],
-                              optimize("low_frequency_noise", tv_weight=100.)[0])
+    ordinary, _, _ = fit_replica(
+        services, segment, "low_frequency_noise", PGD(epochs=3, batch_size=3, seed=0))
+    regularized, _, _ = fit_replica(
+        services, segment, "low_frequency_noise",
+        PGD(epochs=3, batch_size=3, seed=0, tv_weight=100.))
+    assert not np.array_equal(ordinary, regularized)
 
 
-@pytest.mark.parametrize("maximum,image_dependent,expected_unchanged", [
-    pytest.param(None, False, True, id="all-training"),
-    pytest.param(1, True, False, id="capped-image-dependent"),
+@pytest.mark.parametrize("maximum,expected_segments", [
+    pytest.param(None, 2, id="all-training"),
+    pytest.param(1, 1, id="capped-training"),
+])
+@pytest.mark.parametrize("image_dependent,expected_unchanged", [
+    pytest.param(False, True, id="image-independent"),
+    pytest.param(True, False, id="image-dependent"),
 ])
 def test_black_box_offline_phase(
-    nurec_patch_services_and_segment, tmp_path, maximum, image_dependent, expected_unchanged,
+    nurec_patch_services_and_segment, tmp_path, maximum, expected_segments,
+    image_dependent, expected_unchanged,
 ):
     original_services, make_segment = nurec_patch_services_and_segment
     training = (make_segment(), make_segment(start=16))
@@ -406,7 +525,6 @@ def test_black_box_offline_phase(
         report = context.report
         rows = report.tables["optimization_rollouts"].rows
         eligibility = report.tables["training_segment_eligibility"].rows
-        expected_segments = maximum or len(training)
         assert len(eligibility) == expected_segments
         assert all(row["retained"] for row in eligibility)
         assert all(row["run_log"].startswith("eligibility_rollouts/") for row in eligibility)

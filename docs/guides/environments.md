@@ -83,9 +83,9 @@ requires the augment extra. It uses the same sensor-environment mechanism. See
 
 ## Custom sensor corruptions
 
-Implement apply(rgb, rng), or a callable with that signature, returning uint8 RGB with the same
-shape. Select it with a constructor path such as `my_project.corruptions:DimImage`.
-Filesystem constructor parameters follow
+Provide a constructor that returns an object with `apply(rgb, rng)` or a callable accepting
+`(rgb, rng)`. The result must be a uint8 RGB array with the same shape. Configure the constructor's
+`type` path and `options`. Filesystem constructor parameters follow
 [path resolution](../reference/configuration.md#constructor-filesystem-parameters).
 
 <!-- runnable -->
@@ -115,8 +115,8 @@ in [Simulators](simulators.md).
 ## Randomness
 
 Sensor corruptions use a fresh NumPy generator. Frames ending at decision timestamps use
-`(run_seed, grid_position, corruption_index)`. Other frames use
-`(run_seed, grid_position, corruption_index, interval_capture_index)`, where the last value is
+`(hook_seed, grid_position, corruption_index)`. Other frames use
+`(hook_seed, grid_position, corruption_index, interval_capture_index)`, where the last value is
 that camera's frame ordinal within the decision interval, starting at one. Pre-origin frames
 use the containing interval's grid position with floor rounding and the same camera-specific
 index. Corruptions run only when their sensor is due.

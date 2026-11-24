@@ -29,7 +29,7 @@ def _post_texture(height_pixels: int = 256, width_pixels: int = 16,
 class PlaneSurface:
     """A textured rectangle, with corners ordered TL, TR, BR, BL from its front.
 
-    Asset surfaces use local coordinates; resolved surfaces use world coordinates.
+    Asset surfaces use local coordinates. Resolved surfaces use world coordinates.
     ``nominal_texture`` is the optional unmodified appearance of an edited texture, with the
     same shape and alpha. Harmonizers estimate scene adjustments from it, so an edit such as an
     adversarial patch does not change how the scene adjusts the rest of the surface.
@@ -116,9 +116,9 @@ class ObjectAsset:
         """Build a +X-facing panel and optional support posts above a ground-level origin.
 
         The image's aspect ratio determines the face height. Posts stand 3 cm behind
-        the face and reach its center; several posts are spaced across +/-35% of its
+        the face and reach its center. Several posts are spaced across +/-35% of its
         width. Surfaces list the posts first and the panel last. ``nominal_texture`` is
-        the panel's unmodified appearance; see PlaneSurface.
+        the panel's unmodified appearance. See PlaneSurface.
         """
         face = load_rgba_image(texture)
         nominal = None if nominal_texture is None else load_rgba_image(nominal_texture)

@@ -4,10 +4,7 @@ import numpy as np
 import pytest
 
 from avsectester.attack import Attack, AttackSegment, OfflineContext, OnlineContext
-from avsectester.attack.segments import split_segments
-from avsectester.execution.services import ClosedLoopServices
 from avsectester.datasets import FrameReference
-from tests.fakes import MemoryDataset, MemorySimulator
 
 
 def test_save_and_load_artifacts(tmp_path):
@@ -18,28 +15,17 @@ def test_save_and_load_artifacts(tmp_path):
     np.testing.assert_array_equal(restored["image"], artifacts["image"])
 
 
-def test_default_phases():
-    class SelectionOnlyAttack(Attack):
-        def __init__(self, decisions=2):
-            self.decisions = decisions
-
-        def build_metadata(self, scenario):
-            return split_segments(scenario.frames, lambda frame: True, decision_steps=self.decisions)
-
-    attack = SelectionOnlyAttack()
-    with ClosedLoopServices(MemoryDataset(), MemorySimulator()) as services:
-        metadata = attack.build_metadata(services.scenario("scene", seed=0))
-        assert attack.run_offline(OfflineContext(services, metadata)) is None
-    assert metadata[0].decision_steps == 2
-    default = Attack()
-    default.validate_segment(metadata[0])
-    assert default.deployment_ticks(metadata[0]) == 0
-    runtime = default.create_runtime(metadata[0], None)
+def test_default_phases(segment):
+    attack = Attack()
+    assert attack.run_offline(OfflineContext(None, (segment,))) is None
+    attack.validate_segment(segment)
+    assert attack.deployment_ticks(segment) == 0
+    runtime = attack.create_runtime(segment, None)
     context = OnlineContext(0, "setup", 0., 0)
     assert runtime.setup(context) == () and runtime.step(context) == ()
     assert runtime.stop(context) is None
     with pytest.raises(NotImplementedError, match="metadata.load"):
-        default.build_metadata(None)
+        attack.build_metadata(None)
 
 
 def test_attack_segment():

@@ -59,9 +59,11 @@ def run_directory(root: Path, segment_index: int, seed: int, treatment: str,
     return directory / treatment
 
 
-def saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, int | None, str], Path], ...]:
-    """List saved runs as ((segment_index, seed, stored_repeat, treatment), directory)."""
-    found = []
+def _saved_run_directories(
+    root: Path,
+) -> tuple[tuple[tuple[int, int, int | None, str] | None, Path], ...]:
+    """List saved runs, with no identity for paths that do not match the directory format."""
+    found: list[tuple[tuple[int, int, int | None, str] | None, Path]] = []
     runs = runs_directory(root)
     pattern = f"{_SEGMENT_PREFIX}*/{_SEED_PREFIX}*"
     manifests = [*runs.glob(f"{pattern}/*/manifest.json"),
@@ -74,9 +76,11 @@ def saved_run_directories(root: Path) -> tuple[tuple[tuple[int, int, int | None,
             seed = int(seed_dir.removeprefix(_SEED_PREFIX))
             repeat = int(repeat_dir[0].removeprefix(_REPEAT_PREFIX)) if repeat_dir else None
         except ValueError:
+            found.append((None, directory))
             continue
-        if run_directory(root, index, seed, treatment, repeat) == directory:
-            found.append(((index, seed, repeat, treatment), directory))
+        key = (index, seed, repeat, treatment)
+        canonical = run_directory(root, index, seed, treatment, repeat)
+        found.append((key if canonical == directory else None, directory))
     return tuple(found)
 
 
@@ -285,7 +289,7 @@ def _canonical_text(value: Any) -> str:
 
 def _read_preparation(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
     if "preparation" not in manifest:
-        raise ValueError("Saved preparation has no preparation record; prepare it again")
+        raise ValueError("Saved preparation has no preparation record. Prepare it again")
     return validated_preparation(manifest["preparation"], manifest["attacks"])
 
 
@@ -516,9 +520,10 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
     destination = runs_directory(root)
     known_treatments = {item.name for item in config.runs.treatments}
     notices = tuple(
-        f"Skipping saved run for removed treatment: {path}" if key[3] not in known_treatments
+        f"Skipping saved run with invalid directory name: {path}" if key is None
+        else f"Skipping saved run for removed treatment: {path}" if key[3] not in known_treatments
         else f"Skipping saved run that the saved preparation does not expect: {path}"
-        for key, path in saved_run_directories(root) if key not in expected
+        for key, path in _saved_run_directories(root) if key is None or key not in expected
     )
     runs: list[TreatmentResult] = []
     for (index, seed, repeat, treatment), (unit, name, path) in expected.items():
@@ -528,7 +533,7 @@ def load_result(directory: str | Path, configuration: ExperimentConfiguration) -
         if repeat is not None:
             description["repeat"] = repeat
         if not (path / "manifest.json").is_file():
-            message = "Expected run has no saved manifest; execution did not finish this treatment"
+            message = "Expected run has no saved manifest. Execution did not finish this treatment"
             log = RunLog(metadata=description, status="incomplete", path=path)
             runs.append(TreatmentResult(name, index, segment, treatment, seed, log, message, unit.part,
                                         repeat=repeat or 0))

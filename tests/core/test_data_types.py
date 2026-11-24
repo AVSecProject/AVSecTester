@@ -115,11 +115,19 @@ def test_write_sensor_data():
 
 def test_set_calibration():
     native = CarlaImageData(data=np.zeros((2, 3, 3), np.uint8), calibration="original")
-    observation = Observation(0., 0, {"front": native, "rear": np.zeros((2, 3, 3), np.uint8)})
-    observation.set_calibration("front", "replacement")
-    assert observation.calibration["front"] == native.calibration == "replacement"
-    observation.set_calibration("rear", "array lens")
-    assert observation.calibration["rear"] == "array lens"
+    state = TimedStateEstimate(0, 0., None, 0.)
+    frame = DeliveredAcquisition(0, 0., 0, native, "original", state)
+    observation = Observation(0., 0, {"front": native, "rear": np.zeros((2, 3, 3), np.uint8)},
+                              {"front": "original"}, deliveries={"front": (frame,)})
+    changed = write_sensor_data(observation, "rear", np.ones((2, 3, 3), np.uint8))
+    changed.set_calibration("front", "replacement")
+    assert changed.calibration["front"] == changed.sensor_data["front"].calibration == "replacement"
+    assert changed.delivered("front")[0].calibration == "replacement"
+    assert observation.calibration["front"] == native.calibration == "original"
+    assert observation.delivered("front")[0].data.calibration == frame.data.calibration == "original"
+    changed.set_calibration("rear", "array lens")
+    assert changed.calibration["rear"] == "array lens"
+    assert "rear" not in observation.calibration
     with pytest.raises(KeyError, match="Unknown observation sensor"):
         observation.set_calibration("missing", "lens")
 

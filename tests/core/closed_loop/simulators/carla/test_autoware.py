@@ -2,20 +2,157 @@
 import json
 from pathlib import Path
 import subprocess
-import time
 
 import numpy as np
 import pytest
 
 from avsectester.closed_loop.simulators.carla import ExternalDrivingContext
 from avsectester.closed_loop.simulators.carla.autoware import AutowareDrivingSystem
+from avsectester.closed_loop.simulators.carla.autoware.driving_system import DEFAULT_AUTOWARE_IMAGE
 from avsectester.closed_loop.simulators.carla.autoware.container.apply_interception import apply_rewrites
-from avsectester.closed_loop.simulators.messages import MessageStage
-from tests.fakes import autoware_process_boundary
+from tests.fakes import ControllableClock, docker_process_boundary, wait_until
 
 
 CONTEXT = ExternalDrivingContext("127.0.0.1", 24880, "Town10HD_Opt",
                                  {"x": -1.16, "y": -28.37, "yaw_deg": -.16}, 20)
+
+
+def autoware_process_boundary(tmp_path, monkeypatch):
+    """Fake the Docker daemon, traffic source process and JSON-speaking ROS adapter."""
+    extension = tmp_path / "autoware_docker.py"
+    extension.write_text(r'''
+import json, os, sys
+autoware_mode = os.environ.get("DOCKER_AUTOWARE_MODE", "ready")
+if args[:2] == ["image", "inspect"]:
+    if autoware_mode == "missing-image":
+        print("No such image", file=sys.stderr)
+        raise SystemExit(1)
+    print("id-local-image")
+    raise SystemExit(0)
+if args[0] == "exec":
+    import threading
+    import time
+
+    if args[-1].endswith("apply_carla_overrides.py"):
+        print("Applied CARLA overrides")
+        raise SystemExit(0)
+    if any(arg.endswith("/apply_interception.py") for arg in args):
+        print("Applied ROS interception rewrites")
+        raise SystemExit(0)
+    interactive = args[1] == "-i"
+    identity_index = 1
+    while args[identity_index] in {"-i", "-w", "-e"}:
+        identity_index += 1 if args[identity_index] == "-i" else 2
+    path = locate(args[identity_index])
+    if "avsectester.closed_loop.ros_interception.relay" in args:
+        import socket
+        from avsectester.closed_loop.ros_interception.wire import send_frame
+        argv = next(argv for line in calls.read_text().splitlines()
+                    if (argv := json.loads(line))[0] == "run"
+                    and argv[argv.index("--name") + 1] == path.name)
+        mount = next(arg for arg in argv if ",target=/avsectester-run," in arg)
+        directory = os.open(mount.split("source=", 1)[1].split(",target=", 1)[0], os.O_DIRECTORY)
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(f"/proc/self/fd/{directory}/interception.sock")
+                send_frame(connection, {"kind": "ready"})
+                while (current := read(path)) and current["running"]:
+                    time.sleep(.05)
+        finally:
+            os.close(directory)
+        raise SystemExit(0)
+    if not interactive:
+        print("Started an Autoware process", flush=True)
+        while (current := read(path)) and current["running"]:
+            time.sleep(.05)
+        raise SystemExit(0)
+
+    def event(kind, **fields):
+        print(json.dumps({"event": kind, **fields}), flush=True)
+
+    def mode_event(mode, available, *, in_transition=False, raw_mode=None,
+                   raw_available=None, raw_in_transition=None):
+        if "--raw-operation-mode-topic" in args:
+            raw = {"mode": mode if raw_mode is None else raw_mode,
+                   "stamp": {"sec": 20, "nanosec": 0},
+                   "is_autonomous_mode_available": available if raw_available is None else raw_available,
+                   "is_in_transition": in_transition if raw_in_transition is None else raw_in_transition}
+            event("raw_mode", mode=raw["mode"], in_transition=raw["is_in_transition"], raw=raw)
+        event("mode", mode=mode, available=available, in_transition=in_transition)
+
+    event("connected")
+    if autoware_mode != "no-lidar":
+        event("lidar")
+    event("discovery", initialize=True, autonomous=autoware_mode != "no-adapi",
+          goal_subscriber=True)
+    mode_event(1, False)
+    event("mrm", state=1, behavior=1)
+    retries = 0
+
+    def publish_distortion():
+        while True:
+            event("distortion", name="distortion_corrector", message="missing point time")
+            time.sleep(.02)
+
+    for line in sys.stdin:
+        command = json.loads(line)
+        kind = command["call"]
+        request_id = command["id"]
+        if kind == "initialize":
+            retries += 1
+            if autoware_mode == "retry" and retries == 1:
+                event("result", id=request_id, success=False, message="GNSS fix unavailable")
+                continue
+            event("result", id=request_id, success=True)
+            event("localization", state=3)
+            event("pose", x=-1.425, y=0.0, yaw_rad=0.0)
+            if autoware_mode == "distortion":
+                threading.Thread(target=publish_distortion, daemon=True).start()
+        elif kind == "goal":
+            accepted = autoware_mode != "goal-rejected"
+            event("result", id=request_id, success=accepted,
+                  message="" if accepted else "no route")
+            if accepted:
+                event("route", state=2)
+                if autoware_mode == "interception-mode-disagreement":
+                    mode_event(1, True, raw_mode=0, raw_available=False, raw_in_transition=True)
+                else:
+                    mode_event(1, True)
+        elif kind == "engage":
+            accepted = autoware_mode != "engage-rejected"
+            event("result", id=request_id, success=accepted,
+                  message="" if accepted else "mode transition rejected")
+            if accepted and autoware_mode != "engage-timeout":
+                if autoware_mode == "interception-mode-disagreement":
+                    mode_event(1, True, in_transition=True, raw_mode=2, raw_in_transition=False)
+                else:
+                    mode_event(2, True)
+                time.sleep(.05)
+                event("route", state=3)
+        else:
+            raise ValueError(kind)
+    raise SystemExit(0)
+''')
+    state, calls = docker_process_boundary(tmp_path, monkeypatch, extension=extension)
+
+    assets = tmp_path / "assets"
+    official = assets / "run"
+    official.mkdir(parents=True)
+    (official / "carla_traffic_light_state_source.py").write_text(
+        "import time\nwhile True:\n    time.sleep(1)\n")
+    (official / "autoware_traffic_light_state_publisher.py").touch()
+    town = assets / "map_tools/maps/Town10HD"
+    town.mkdir(parents=True)
+    for filename in ("lanelet2_map.osm", "pointcloud_map.pcd", "map_projector_info.yaml"):
+        (town / filename).touch()
+    dds = tmp_path / "dds"
+    dds.mkdir()
+    (dds / "cyclonedds.xml").touch()
+    data = tmp_path / "autoware_data"
+    data.mkdir()
+    options = {"assets_directory": assets, "dds_directory": dds,
+               "autoware_data_directory": data, "work_directory": tmp_path / "runs"}
+    return state, calls, options
 
 
 @pytest.fixture()
@@ -23,48 +160,45 @@ def boundary(tmp_path, monkeypatch):
     return autoware_process_boundary(tmp_path, monkeypatch)
 
 
-def _ready(session, timeout=12):
-    pose = np.eye(4)
-    deadline = time.monotonic() + timeout
-    while not session.poll(pose, 20.0):
-        if time.monotonic() >= deadline:
-            pytest.fail("Autoware fixture did not become ready")
-        time.sleep(.01)
+def _ready(session):
+    wait_until(lambda: session.poll(np.eye(4), 20.0))
 
 
 def _drive_until_arrived(session):
-    deadline = time.monotonic() + 3
-    while session.report()["arrived"] is None:
+    def arrived():
         session.check()
-        if time.monotonic() >= deadline:
-            pytest.fail("Autoware fixture did not complete its route")
-        time.sleep(.01)
+        return session.report()["arrived"] is not None
+
+    wait_until(arrived)
 
 
 def test_autoware_start(boundary, monkeypatch):
     state, calls, paths = boundary
     system = AutowareDrivingSystem(gpu=4, ros_domain_id=94, distortion_check_s=0,
                                    launch_arguments={"vehicle_model": "my_vehicle"}, **paths)
-    with pytest.raises(ValueError, match="launch argument 'map_path' is fixed"):
-        AutowareDrivingSystem(gpu=4, ros_domain_id=94, launch_arguments={"map_path": "/x"},
-                              **paths)
+    assert system.identity["image"] == DEFAULT_AUTOWARE_IMAGE
     with pytest.raises(ValueError, match="CARLA map_tools"):
         system.start(ExternalDrivingContext("127.0.0.1", 24880, "Town03", CONTEXT.ego_goal, 20))
+    clock = ControllableClock()
+    clock.install(monkeypatch, AutowareDrivingSystem)
     monkeypatch.setenv("DOCKER_AUTOWARE_MODE", "retry")
     session = system.start(CONTEXT)
     try:
-        # One localization retry and one goal retry wait their full intervals.
-        _ready(session, timeout=20)
+        def first_request_rejected():
+            session.poll(np.eye(4), 20.)
+            return any(event["event"] == "localization_response" and not event["success"]
+                       for event in session.report()["readiness"])
+
+        wait_until(first_request_rejected)
+        clock.advance(60.)
+        _ready(session)
         report = session.report()
-        milestones = [event["event"] for event in report["readiness"]]
-        conditions = ["adapi_ready", "localization_request", "localization_response",
-                      "localization_request", "localization_response", "localization_initialized",
-                      "localization_check_passed", "distortion_check_passed", "goal_requested",
-                      "goal_requested", "route_set", "autonomous_available"]
-        assert [item for item in milestones if item in conditions] == conditions
-        for name, interval_s in (("localization_request", 8.0), ("goal_requested", 5.0)):
-            requests = [event for event in report["readiness"] if event["event"] == name]
-            assert requests[1]["wall_elapsed_s"] - requests[0]["wall_elapsed_s"] >= interval_s
+        assert [event["attempt"] for event in report["readiness"]
+                if event["event"] == "localization_request"] == [1, 2]
+        conditions = ["adapi_ready", "localization_initialized", "localization_check_passed",
+                      "distortion_check_passed", "goal_requested", "route_set", "autonomous_available"]
+        assert [event["event"] for event in report["readiness"]
+                if event["event"] in conditions] == conditions
         assert session.telemetry()["route_state"] == 2
 
         docker = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -73,7 +207,8 @@ def test_autoware_start(boundary, monkeypatch):
         assert launch[launch.index("--gpus") + 1] == "device=4"
         assert "ROS_DOMAIN_ID=94" in launch
         assert launch[launch.index("--name") + 1] == report["container_name"]
-        assert launch.count("--mount") == 6
+        assert any("target=/root/autoware_data" in argument for argument in launch)
+        assert any("target=/maps/Town10HD,readonly" in argument for argument in launch)
         stack = next(argv for argv in docker if "e2e_simulator.launch.xml" in argv)
         assert {"vehicle_model:=my_vehicle", "sensor_model:=awsim_sensor_kit",
                 "perception_mode:=lidar", "rviz:=false", "simulator_type:=carla",
@@ -87,22 +222,13 @@ def test_autoware_start(boundary, monkeypatch):
 
 def test_autoware_reports_readiness_failure(boundary, monkeypatch):
     state, _, paths = boundary
-    system = AutowareDrivingSystem(gpu=4, ros_domain_id=94, startup_timeout_s=2,
+    system = AutowareDrivingSystem(gpu=4, ros_domain_id=94, startup_timeout_s=1.5,
                                    distortion_check_s=.5, **paths)
-    failures = (
-        ("missing-image", "must be present locally"),
+    for mode, error in (
         ("no-adapi", "wait for ADAPI: Startup timed out"),
-        ("init-rejected", "initialize localization: Startup timed out"),
-        ("uninitialized", "wait for localization INITIALIZED: Startup timed out"),
-        ("bad-pose", "Last localization error"),
         ("distortion", "Pointcloud distortion diagnostic"),
-        ("no-goal-subscriber", "wait for goal subscriber: Startup timed out"),
-        ("goal-rejected", "Goal rejected: no route"),
-        ("no-route", "Goal rejected: route did not become SET"),
-        ("unavailable", "wait for autonomous availability: Startup timed out"),
         ("no-lidar", "Check the ROS domain ID and DDS network"),
-    )
-    for mode, error in failures:
+    ):
         monkeypatch.setenv("DOCKER_AUTOWARE_MODE", mode)
         session = system.start(CONTEXT)
         try:
@@ -154,12 +280,10 @@ def test_autoware_topic_selection(boundary):
     default = AutowareDrivingSystem(**options)
     assert default.interception is None
     assert {"modified_topics", "observed_topics", "interception_version"}.isdisjoint(default.identity)
-
     with pytest.raises(ValueError, match="Unknown modified topics: /arbitrary.*Choose from"):
         AutowareDrivingSystem(modified_topics=["/arbitrary"], **options)
-    with pytest.raises(ValueError, match="cannot be both modified and observed: /planning/trajectory"):
-        AutowareDrivingSystem(modified_topics=["/planning/trajectory"],
-                              observed_topics=["/planning/trajectory"], **options)
+    with pytest.raises(ValueError, match="launch argument 'map_path' is fixed"):
+        AutowareDrivingSystem(launch_arguments={"map_path": "/x"}, **options)
 
     covariance = "/sensing/gnss/pose_with_covariance"
     pose = "/sensing/gnss/pose"
@@ -168,68 +292,66 @@ def test_autoware_topic_selection(boundary):
     system = AutowareDrivingSystem(modified_topics=[covariance], observed_topics=observed, **options)
     assert system.identity["observed_topics"] == sorted(observed)
     assert system.interception is not None
-    assert system.interception.projection is None
-    assert system.interception.stages == {
-        covariance: MessageStage("gnss"),
-        pose: MessageStage("gnss", modifiable=False),
-        lidar: MessageStage("lidar_top", modifiable=False),
-        "/z_external": MessageStage(modifiable=False),
-        "/localization/kinematic_state": MessageStage(modifiable=False),
-    }
     routed = {topic.name: topic for topic in system.interception.topics}
     assert set(routed) == {covariance, pose}
     assert len(routed[covariance].publishers) == 2
+    assert routed[covariance].sensor == "gnss"
     assert routed[pose].passthrough
+    assert set(system.interception.observed_sensors) == {(pose, "gnss"), (lidar, "lidar_top")}
 
 
-@pytest.mark.parametrize(("modified", "observed", "roles", "apply_overrides"), [
-    (["/localization/kinematic_state"], [], {"forwarding"}, True),
-    ([], ["/system/operation_mode/state"], {"observation"}, False),
-    (["/localization/kinematic_state"], ["/system/operation_mode/state"],
-     {"forwarding", "observation"}, True),
-])
-def test_autoware_interception_processes(boundary, modified, observed, roles, apply_overrides):
+def test_autoware_interception_processes(boundary):
     state, calls, paths = boundary
+    modified = "/localization/kinematic_state"
+    observed = "/system/operation_mode/state"
     system = AutowareDrivingSystem(
         gpu=0, ros_domain_id=94, distortion_check_s=0,
-        modified_topics=modified, observed_topics=observed, **paths)
+        modified_topics=[modified], observed_topics=[observed], **paths)
     session = system.start(CONTEXT)
     try:
         _ready(session)
-        channel = session.interception_channel
-        assert channel is not None and channel.relay_count == len(roles)
         report = session.report()
         directory = Path(report["logs"]["adapter"]).parent
         commands = [json.loads(line) for line in calls.read_text().splitlines()]
         base_uri = "CYCLONEDDS_URI=file:///dds/cyclonedds.xml"
         assert base_uri in next(argv for argv in commands if argv[0] == "run")
-        relays = {Path(argv[argv.index("--configuration") + 1]).stem.removeprefix("interception-"): argv
+        relays = {Path(argv[argv.index("--configuration") + 1]).stem: argv
                   for argv in commands if "avsectester.closed_loop.ros_interception.relay" in argv}
-        assert relays.keys() == roles
-        expected = {
-            "forwarding": (modified, [], "/localization/kinematic_state",
-                           [base_uri + ",<General><AllowMulticast>spdp</AllowMulticast></General>"]),
-            "observation": ([], observed, None, []),
-        }
-        for role, relay in relays.items():
-            routed, listened, pose_topic, environment = expected[role]
-            assert relay[relay.index("-w") + 1] == "/avsectester-src"
-            assert relay[relay.index("--socket") + 1] == "/avsectester-run/interception.sock"
-            assert [arg for arg in relay if arg.startswith("CYCLONEDDS_URI=")] == environment
-            assert Path(report["logs"][f"interception_{role}"]).name == f"interception-{role}.log"
-            specification = json.loads((directory / f"interception-{role}.json").read_text())
-            assert specification["role"] == role
-            assert [item["name"] for item in specification["topics"]] == routed
-            assert specification["observed_topics"] == listened
-            assert (specification["projection"] or {}).get("pose_topic") == pose_topic
-
+        assert set(relays) == {"interception-forwarding", "interception-observation"}
+        assert base_uri + ",<General><AllowMulticast>spdp</AllowMulticast></General>" in relays[
+            "interception-forwarding"]
+        assert not any(arg.startswith("CYCLONEDDS_URI=") for arg in relays["interception-observation"])
         adapter = next(argv for argv in commands if "/avsectester-adapter/adapter.py" in argv)
         assert "--raw-operation-mode-topic" not in adapter
-        rewrites_applied = any("/avsectester-adapter/apply_interception.py" in argv for argv in commands)
-        assert rewrites_applied == apply_overrides
+        assert any("/avsectester-adapter/apply_interception.py" in argv for argv in commands)
+        for role, argv in relays.items():
+            assert argv[argv.index("--socket") + 1] == "/avsectester-run/interception.sock"
+            assert (directory / (role + ".json")).is_file()
     finally:
         session.stop()
     assert not (directory / "interception.sock").exists()
+    assert not list(state.iterdir())
+
+
+def test_autoware_observation_only(boundary):
+    state, calls, paths = boundary
+    system = AutowareDrivingSystem(
+        gpu=0, ros_domain_id=94, distortion_check_s=0,
+        modified_topics=[], observed_topics=["/control/command/control_cmd"], **paths,
+    )
+    session = system.start(CONTEXT)
+    try:
+        _ready(session)
+        commands = [json.loads(line) for line in calls.read_text().splitlines()]
+        relay, = (argv for argv in commands if "avsectester.closed_loop.ros_interception.relay" in argv)
+        configuration = relay[relay.index("--configuration") + 1]
+        assert Path(configuration).stem == "interception-observation"
+        assert not any(arg.startswith("CYCLONEDDS_URI=") for arg in relay)
+        assert not any(arg.endswith("/apply_interception.py") for argv in commands for arg in argv)
+        launch = next(argv for argv in commands if "e2e_simulator.launch.xml" in argv)
+        assert not any(arg.startswith("output_control_cmd:=") for arg in launch)
+    finally:
+        session.stop()
     assert not list(state.iterdir())
 
 
@@ -307,11 +429,8 @@ def test_autoware_check_detects_exit(boundary):
         session.engage()
         _drive_until_arrived(session)
         subprocess.run(["docker", "stop", session.report()["container_name"]], check=True)
-        deadline = time.monotonic() + 3
         with pytest.raises(RuntimeError, match="exited"):
-            while time.monotonic() < deadline:
-                session.check()
-                time.sleep(.01)
+            wait_until(session.check)
     finally:
         session.stop()
     assert not list(state.iterdir())

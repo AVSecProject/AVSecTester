@@ -1,3 +1,5 @@
+"""Pose corrections and timestamp joins at the ROS boundary."""
+
 import math
 
 import numpy as np
@@ -34,12 +36,12 @@ def test_transforms_wait_for_their_pose_and_fall_back_only_when_it_cannot_arrive
 
     # A later pose shows that a transform's own pose will not arrive.
     waiting.enqueue("unmatched", [4], 1.3)
-    waiting.pose(5, None)
+    waiting.pose(5, delta)
     fallback, = waiting.drain(1.3)
-    assert fallback.message == "unmatched" and fallback.pairs == ((None, False),)
+    assert fallback.message == "unmatched" and fallback.pairs == ((delta, False),)
 
     # The timeout only releases a transform when the pose topic has stopped.
     waiting.enqueue("stopped", [6], 1.4)
     assert waiting.drain(1.89) == []
     stopped, = waiting.drain(1.91)
-    assert stopped.pairs == ((None, False),)
+    assert stopped.pairs == ((delta, False),)

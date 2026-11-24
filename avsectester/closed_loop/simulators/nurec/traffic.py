@@ -24,7 +24,7 @@ def _grpc_modules() -> tuple[Any, Any, Any, Any]:
         import grpc
         from alpasim_grpc.v0 import common_pb2, traffic_pb2, traffic_pb2_grpc
     except ImportError as error:
-        raise ImportError("AlpaSim traffic requires alpasim_grpc and grpcio; use the NuRec image") from error
+        raise ImportError("AlpaSim traffic requires alpasim_grpc and grpcio. Use the NuRec image") from error
     return grpc, common_pb2, traffic_pb2, traffic_pb2_grpc
 
 

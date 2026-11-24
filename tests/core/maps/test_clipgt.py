@@ -10,7 +10,7 @@ from avsectester.maps.clipgt import read_clipgt
 
 @pytest.fixture
 def nurec_map_variants(nurec_usdz_path, tmp_path):
-    """The same reconstruction with a light placeholder or only implicit wait lines."""
+    """Variants of one reconstruction with missing map information."""
     import io
     import pyarrow as arrow
     import pyarrow.parquet as parquet
@@ -35,7 +35,7 @@ def nurec_map_variants(nurec_usdz_path, tmp_path):
                 if member.filename != member_name:
                     destination.writestr(member.filename, source.read(member.filename))
             destination.writestr(member_name, output.getvalue().to_pybytes())
-        paths[variant] = str(path)
+        paths[variant] = path
     unknown_units = tmp_path / "without-speed-unit.usdz"
     with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(unknown_units, "w") as destination:
         for member in source.infolist():

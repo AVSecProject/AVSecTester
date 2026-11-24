@@ -259,7 +259,7 @@ def visibility_from_depth(
     target_depth may come from an isolated reference render or known surface geometry. The
     target and camera poses must match the scene measurement. Depth outside image_bounds is
     not needed and may be NaN. Target depth inside the in-image footprint must be finite and
-    positive; positive infinite scene depth means no scene intersection.
+    positive. Positive infinite scene depth means no scene intersection.
     """
     footprint = np.asarray(footprint, dtype=bool)
     target_depth, scene_depth = np.asarray(target_depth), np.asarray(scene_depth)

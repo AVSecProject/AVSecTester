@@ -16,7 +16,7 @@ from avsectester.maps.scenario_map import (
 
 
 def _map_points(values):
-    """Read one clipgt polyline; placeholder rows contain no geometry."""
+    """Read one clipgt polyline. Placeholder rows contain no geometry."""
     if not values:
         return np.empty((0, 3), dtype=float)
     return np.asarray([[point[axis] for axis in ("x", "y", "z")] for point in values], dtype=float)
@@ -38,7 +38,7 @@ def _matched_rails(left, right):
 
 
 def _speed_multiplier(archive):
-    """Use explicit OpenDRIVE units; bare clipgt speed numbers do not declare a unit."""
+    """Use explicit OpenDRIVE units. Bare clipgt speed numbers do not declare a unit."""
     if "map.xodr" not in archive.namelist():
         return None
     root = ElementTree.fromstring(archive.read("map.xodr"))

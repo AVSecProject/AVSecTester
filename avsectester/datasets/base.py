@@ -53,7 +53,7 @@ class SensorDataReference:
 class FrameData:
     """World-frame actor states and recorded sensor references at one dataset position.
 
-    ``ego`` holds the recorded ego state; ``actors`` excludes ego and uses stable actor IDs.
+    ``ego`` holds the recorded ego state. ``actors`` excludes ego and uses stable actor IDs.
     Sensor-reference metadata carries calibration needed by recorded replay.
     """
 
@@ -68,7 +68,7 @@ class FrameData:
 class ScenarioStart:
     """What a simulator needs to start a scenario at a frame, without attack or selection metadata.
 
-    ``kind`` is the dataset class name (``NuRecDataset``, ``NuScenesDataset`` or ``CarlaDataset``);
+    ``kind`` is the dataset class name (``NuRecDataset``, ``NuScenesDataset`` or ``CarlaDataset``).
     ``payload`` is that dataset's start data and is copied on construction.
     ``recorded_ego`` contains the complete decision-timeline recording, when available.
     ``scenario_map`` is read-only and shared without copying.

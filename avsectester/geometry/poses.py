@@ -86,7 +86,7 @@ def rotation_to_quaternion(rotation: ArrayLike) -> tuple[float, float, float, fl
     """Return a normalized w/x/y/z quaternion, including for rotations close to pi.
 
     The eigenvector formulation avoids division by a near-zero quaternion component.
-    Quaternions have a sign ambiguity; either sign represents the same rotation.
+    Quaternions have a sign ambiguity. Either sign represents the same rotation.
     """
     matrix = np.asarray(rotation, dtype=float)
     if matrix.shape != (3, 3) or not np.isfinite(matrix).all():

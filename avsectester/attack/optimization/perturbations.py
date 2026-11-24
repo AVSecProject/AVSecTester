@@ -21,7 +21,7 @@ class PatchPerturbation(Perturbation):
     `avsectester.rendering.surfaces.PlaneSampling`: the patch is filtered exactly as
     deployment renders it, so gradients reach every texel. ``sampling_grid`` is an image-sized
     ``grid_sample`` grid measured from a native renderer that samples the texture itself.
-    ``project`` clamps to [0,1] (the whole surface is adversarial); ``export`` yields the
+    ``project`` clamps to [0,1] (the whole surface is adversarial). ``export`` yields the
     deploy texture.
     """
 

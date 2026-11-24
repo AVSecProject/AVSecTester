@@ -12,9 +12,9 @@
 -  [setup_carla_ros2_network.sh](preparation/setup_carla_ros2_network.sh) prepares the local
   DDS bridge and server settings. Follow
   [Native ROS 2](../docs/getting-started/installation.md#native-ros-2).
--  [extract_carla_autoware_assets.sh](preparation/extract_carla_autoware_assets.sh) verifies
-  and extracts the official Autoware map, traffic-light scripts and camera profile from the
-  local CARLA image.
+-  [extract_carla_autoware_assets.sh](preparation/extract_carla_autoware_assets.sh) extracts and
+  verifies assets from the local CARLA image. Follow
+  [Hosted Autoware](../docs/getting-started/installation.md#hosted-autoware).
 -  [fetch_models.sh](preparation/fetch_models.sh) downloads avstack's CARLA and
   nuScenes checkpoints.
 -  [export_carla_maps.py](preparation/export_carla_maps.py) exports OpenDRIVE maps. Follow
@@ -35,8 +35,8 @@ docker compose run --rm --entrypoint python nurec-experiment -m scripts.validati
   --usdz data/nurec/26.01_release/023b7fcc-671c-40e3-9bd2-c66b0b073fbc/023b7fcc-671c-40e3-9bd2-c66b0b073fbc.usdz --output results/nurec-depth-validation
 ```
 
-The `--nuscenes DATAROOT` mode of `visualize_scene_labels` and Albumentations run in
-`carla-experiment`. Its `--usdz` mode runs in `nurec-experiment`:
+Run `visualize_scene_labels --nuscenes DATAROOT` and the Albumentations visualization in
+`carla-experiment`. Run `visualize_scene_labels --usdz ARCHIVE` in `nurec-experiment`.
 
 ```bash
 docker compose exec carla-experiment python -m scripts.visualization.visualize_scene_labels --help
@@ -85,8 +85,7 @@ comes from a supplied configuration with the changes listed below. The derived Y
 not tracked.
 
 Unless a row says otherwise, runs record the front camera's raw and model-input images at every
-decision. All runs use a separate NRE renderer port or CARLA server port. Videos play at 8 frames per second, slower than
-the decisions.
+capture. Each run uses a dedicated NRE or CARLA server port.
 
 | Media | Source configuration and changes | Run (segment, seed, treatments) | Command (`python -m scripts.website.make_media ...`) |
 |---|---|---|---|
@@ -106,9 +105,7 @@ The stop-sign runs use the local NuRec 26.01 release. `stop-sign-white-box` show
 clean run stops before the line without a collision and whose attacked run crosses it.
 The stop-sign patch frames show a decision where the replica sign is visible beside a real stop
 sign of the scene. The object insertion and physical patch frames show the last decision of their
-runs. The vehicle insertion pair shows a decision where the inserted car is about 13 m ahead. Both
-images use the same crop, and the LiDAR image draws the scan from the camera's viewpoint. The CARLA sign is placed closer than in the supplied configuration so that it is legible in
-the 800x600 camera.
+runs. The vehicle insertion pair uses the same crop, with LiDAR drawn from the camera viewpoint.
 
 ## Next steps
 

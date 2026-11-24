@@ -7,6 +7,7 @@ import pytest
 
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 from avsectester.data_types import Control
+from avsectester.geometry.cameras import camera_ray_mask
 from avsectester.rendering import MeshAsset, MeshPart
 from avsectester.rendering.harmonizers import ExposureHarmonizer
 from tests.fakes import NuRecRpcBoundary
@@ -106,7 +107,7 @@ def test_mesh_harmonizer(nurec_longitudinal_dataset, monkeypatch, tmp_path):
 
 
 def test_mesh_depth(nurec_longitudinal_dataset, monkeypatch, tmp_path):
-    from avsectester.geometry.mesh import MeshRaycaster, camera_depth
+    from avsectester.geometry.mesh import MeshRaycaster
 
     try:
         MeshRaycaster.check_dependencies()
@@ -129,18 +130,16 @@ def test_mesh_depth(nurec_longitudinal_dataset, monkeypatch, tmp_path):
         near_mask, far_mask = view.object_masks["near"], view.object_masks["far"]
         far_only = far_mask & ~near_mask
         assert near_mask.any() and far_only.any()
-        desired = np.full(view.data.shape[:2], np.inf)
-        depths = {}
-        for object_id, asset, pose, mask in (
-                ("near", near, near_pose, near_mask), ("far", far, far_pose, far_mask)):
-            part = asset.parts[0]
-            vertices = part.vertices @ pose[:3, :3].T + pose[:3, 3]
-            raycaster = MeshRaycaster(vertices, part.faces)
-            depths[object_id] = camera_depth(view.camera, view.cam_from_world, (raycaster,))
-            desired[mask] = np.minimum(desired[mask], depths[object_id][mask])
-        visible = near_mask | far_mask
-        desired = np.where(visible, desired, clean.depth)
-        assert np.all(depths["near"][far_only] < depths["far"][far_only])
-        np.testing.assert_allclose(view.depth, desired, rtol=1e-6, atol=1e-8)
-        np.testing.assert_allclose(view.depth[far_only], depths["far"][far_only], rtol=1e-6)
-        np.testing.assert_array_equal(view.depth[~visible], clean.depth[~visible])
+        # Both panels lie in planes perpendicular to the optical axis.
+        np.testing.assert_allclose(view.depth[near_mask], .02, atol=1e-8)
+        y, x = np.nonzero(far_only)
+        rays = view.camera.unproject(np.column_stack((x + .5, y + .5)))
+        valid = camera_ray_mask(view.camera, rays)
+        xy = .04 * rays[valid, :2] / rays[valid, 2:]
+        hits = np.zeros(len(x), dtype=bool)
+        hits[valid] = (np.abs(xy) <= .08).all(axis=1)
+        assert hits.any()
+        np.testing.assert_allclose(view.depth[y[hits], x[hits]], .04, atol=1e-8)
+        assert np.isposinf(view.depth[y[~hits], x[~hits]]).all()
+        uncovered = ~(near_mask | far_mask)
+        np.testing.assert_array_equal(view.depth[uncovered], clean.depth[uncovered])

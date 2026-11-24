@@ -39,18 +39,14 @@ def test_sensor_capture():
 
 def test_depth_camera(monkeypatch, carla_dataset):
     CarlaRgbCamera = pytest.importorskip("avcarla.sensors").CarlaRgbCamera
-    from tests.fakes import CarlaNativeBoundary
-
-    from avsectester.datasets.carla import CarlaDataset
-
     recipe = carla_dataset.native("scene")
     scenario = {**recipe.scenario, "ego": {
         **recipe.scenario["ego"], "sensors": [{"type": "CarlaRgbCamera", "name": "front"}]}}
-    carla_dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
     boundary = CarlaNativeBoundary().install(monkeypatch, CarlaRgbCamera)
     ordinary = boundary.get("CarlaRgbCamera")
     assert ordinary is CarlaRgbCamera
-    start = carla_dataset.scenario_start("scene", carla_dataset.frames("scene")[0])
+    start = dataset.scenario_start("scene", dataset.frames("scene")[0])
     registered = []
     for _ in range(2):
         with CarlaSimulator({"rate": 10}, depth_camera="front", settle_iters=0).create_runtime() as runtime:
@@ -69,7 +65,7 @@ def test_depth_camera(monkeypatch, carla_dataset):
 
 
 def test_recipe_blueprint_attributes(monkeypatch, carla_dataset):
-    CarlaNativeBoundary().install(monkeypatch, None)
+    CarlaNativeBoundary().install(monkeypatch)
     recipe = carla_dataset.native("scene")
     scenario = deepcopy(recipe.scenario)
     scenario["ego"]["blueprint_attributes"] = {"role_name": "ego", "ros_name": "ego",
@@ -108,7 +104,7 @@ def test_recipe_blueprint_attributes(monkeypatch, carla_dataset):
             runtime.reset(start())
 
     scenario["ego"]["sensors"][0]["blueprint_attributes"] = {"post_process_profile": "Cinematic"}
-    CarlaNativeBoundary(ego_attribute_overrides={"ros_name": "different"}).install(monkeypatch, None)
+    CarlaNativeBoundary(ego_attribute_overrides={"ros_name": "different"}).install(monkeypatch)
     with simulator.create_runtime() as runtime:
         with pytest.raises(ValueError, match=r"ego attribute 'ros_name'.*'ego'.*'different'"):
             runtime.reset(start())

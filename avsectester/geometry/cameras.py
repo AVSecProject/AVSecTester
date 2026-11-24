@@ -106,7 +106,10 @@ def _bivariate_order(coefficients: tuple) -> int:
 
 
 def _bivariate(coefficients: tuple, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Evaluate sum_k p_k(x) * y**k, where p_k has degree order - k; blocks are stored for k = 0, 1, ..."""
+    """Evaluate the sum of ``p_k(x) * y**k`` with coefficient blocks in ascending k order.
+
+    Each ``p_k`` has degree ``order - k``.
+    """
     order, start = _bivariate_order(coefficients), 0
     result = np.zeros_like(x)
     for degree in range(order, -1, -1):
@@ -123,7 +126,7 @@ class WindshieldDistortion:
     A unit optical ray has angles ``phi = asin(x)`` and ``theta = asin(y)``. Bivariate polynomials
     map these angles, and the deflected ray is ``(sin phi', sin theta', sqrt(1 - x'^2 - y'^2))``
     with the original sign of z. ``horizontal_poly`` and ``vertical_poly`` map scene-side rays to
-    lens-side rays; the ``_inverse`` polynomials map back. Coefficients use ncore's order: blocks
+    lens-side rays. The ``_inverse`` polynomials map back. Coefficients use ncore's order: blocks
     of decreasing degree in phi, multiplied by increasing powers of theta.
     """
 

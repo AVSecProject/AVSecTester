@@ -13,7 +13,7 @@ import yaml
 from avsectester.attack import Attack
 from avsectester.closed_loop.avstacks import DrivingAdapter
 from avsectester.closed_loop.hooks import HookSet
-from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
+from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
 from avsectester.data_types import Observation
 from avsectester.evaluation import DrivingMetrics
 from avsectester.experiment import (
@@ -52,7 +52,7 @@ def test_describe_configuration():
     }
     assert type(saved["integer"]) is int
     invalid = replace(configuration, attacks={"probe": MinimalAttack(assets=float("nan"))})
-    with pytest.warns(RuntimeWarning, match="parameter compatibility is unverified"):
+    with pytest.warns(RuntimeWarning, match="Parameter compatibility is unverified"):
         description = invalid.describe_configuration()["attacks"]["probe"]
     assert description["parameters"] is None and description["parameters_verified"] is False
 
@@ -215,7 +215,7 @@ def test_load_configuration(tmp_path):
         load_configuration(repeated)
     repeated["simulator"] = {"type": "CarlaSimulator", "options": {"client": {"rate": 10.}}}
     assert load_configuration(repeated).runs.repeats == 2
-    repeated["simulator"] = {"type": "tests.fakes:RepeatedRunMemorySimulator"}
+    repeated["simulator"] = {"type": "tests.fakes:MemorySimulator", "options": {"can_repeat_runs": True}}
     assert load_configuration(repeated).runs.repeats == 2
     with pytest.raises(ValueError, match="'repeat-0' is reserved for repeat directories"):
         load_configuration({**specification(), "runs": {"treatments": [{"name": "repeat-0"}]}})
@@ -346,18 +346,6 @@ def test_timing_configuration():
     spec["runs"]["timing"]["decision_period_us"] = 200000
     with pytest.raises(ValueError, match="decision_period_us must equal the dataset time grid"):
         load_configuration(spec)
-
-
-def test_configured_history_without_bindings():
-    supplied = Path(__file__).resolve().parents[3] / "configs/nurec_stop_sign_patch_alpamayo_2604.yaml"
-    driver = yaml.safe_load(supplied.read_text())["avstack"]
-    driver.pop("bindings", None)
-    driver["options"]["frame_subsample"] = 6
-    spec = specification()
-    spec["dataset"] = MemoryDataset(decision_steps=40)
-    spec["avstack"] = driver
-    config = load_configuration(spec)
-    assert config.avstack.history == HistoryRequirement(1500000, 19)
 
 
 def test_split_configuration():

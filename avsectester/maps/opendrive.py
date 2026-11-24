@@ -24,7 +24,7 @@ _CONTROL_KINDS: dict[str, Literal["stop_sign", "yield_sign", "speed_limit", "tra
 
 
 def _convex_hull(points: np.ndarray) -> np.ndarray:
-    """Counter-clockwise horizontal convex hull (monotone chain); vertices keep their z."""
+    """Counter-clockwise horizontal convex hull (monotone chain). Vertices keep their z."""
     order = np.lexsort((points[:, 1], points[:, 0]))
     ordered = points[order]
 
@@ -96,8 +96,8 @@ def _sample_lane(native: Any, road: int, lane: int, start: float, stop: float) -
                 continue
             middle = native.get_waypoint_xodr(road, lane, (left.s + right.s) / 2)
             if middle is None or not left.s < middle.s < right.s:
-                # Native widths/offsets may have a true step. Keep both endpoints;
-                # output polylines subdivide their existing straight connector below.
+                # Native widths/offsets may have a true step. Keep both endpoints.
+                # Output polylines subdivide their existing straight connector below.
                 samples.append(left)
                 continue
             pending.extend(((middle, right), (left, middle)))

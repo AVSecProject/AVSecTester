@@ -42,7 +42,7 @@ def test_target_scores_float_tensor():
                     [np.full((4, 5, 3), 51, np.uint8),
                      np.full((4, 5, 3), 204, np.uint8)], targets)
             torch.testing.assert_close(converted, torch.tensor([.2, .8]))
-            with pytest.raises(ValueError, match="target|length"):
+            with pytest.raises(ValueError, match="images and targets must have the same batch length"):
                 scorer.target_scores(images, targets[:1])
 
 

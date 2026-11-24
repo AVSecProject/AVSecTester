@@ -258,7 +258,7 @@ class CarlaRecipe:
     settings. Unknown attribute names raise ``ValueError`` when actors are built.
     Sensors with ``ros=True`` enable native ROS publication after spawning.
     ``ego.ros_rig`` lists attached actors in parent-first order in native CARLA coordinates.
-    ``ego_goal`` specifies the hosted driver's target in framework world coordinates.
+    ``ego_goal`` specifies the hosted driving system's target in framework world coordinates.
     """
     scenario: dict
     decision_steps: int

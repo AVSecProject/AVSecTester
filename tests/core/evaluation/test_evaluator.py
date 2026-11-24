@@ -87,7 +87,7 @@ def test_evaluate_groups(segment, make_log):
     assert report.metric_errors[1]["error"] == "ValueError: Metric returned unknown or incomplete treatment 'unknown'"
     assert report.notes == ["Recorded evidence only."]
     assert "repeat" not in first and "repeat" not in report.metric_errors[0]
-    assert report.repeat_pairs == [] and "repeat_pairs" not in report.as_dict()
+    assert report.repeat_pairs == []
     assert all("mean_differences" not in pair for pair in report.pair_summaries)
     assert [row["treatment"] for row in report.treatment_summaries] == ["clean", "attacked", "rain"]
     assert {metric["type"].split(":")[-1] for metric in report.metrics} >= {"DrivingMetrics", "UserMetric"}
@@ -130,8 +130,6 @@ def test_repeated_groups(segment, make_log):
     report = evaluate_groups(groups, (DrivingMetrics(), TrajectoryDeviation(),
                                       BrokenRepeatMetric(), UserMetric()), repeats=3)
     assert [group["repeat"] for group in report.groups] == [0, 2, 1, 0, 0, 0]
-    assert report.as_dict()["repeats"] == 3
-    assert report.as_dict()["repeat_pairs"] == report.repeat_pairs
     assert [(row["treatment"], row["repeat_a"], row["repeat_b"]) for row in report.repeat_pairs] == [
         ("clean", 0, 1), ("clean", 0, 2), ("clean", 1, 2), ("attacked", 0, 2),
     ]
@@ -178,11 +176,16 @@ def test_repeated_groups(segment, make_log):
 def test_metric_labels(segment, make_log):
     first_type = type("SharedMetric", (UserMetric,), {"__module__": "user_metrics.first"})
     second_type = type("SharedMetric", (UserMetric,), {"__module__": "user_metrics.second"})
+    broken_type = type("SharedMetric", (BrokenMetric,), {"__module__": "user_metrics.broken"})
     group = RunGroup(0, segment, 0, {"clean": make_log([2.])})
-    report = evaluate_groups((group,), (first_type(), second_type()))
+    report = evaluate_groups((group,), (first_type(), second_type(), broken_type()))
     assert [item["label"] for item in report.metrics] == [
         "user_metrics.first:SharedMetric", "user_metrics.second:SharedMetric",
+        "user_metrics.broken:SharedMetric",
     ]
     measurements = report.groups[0]["treatments"]["clean"]["metrics"]
     assert measurements["user_metrics.first:SharedMetric.seed"] == 0
     assert measurements["user_metrics.second:SharedMetric.seed"] == 0
+    assert report.metric_errors[0]["metric"] == "user_metrics.broken:SharedMetric"
+    with pytest.raises(ValueError, match="must not repeat a metric type"):
+        evaluate_groups((group,), (first_type(), first_type()))

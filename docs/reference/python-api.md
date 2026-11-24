@@ -70,6 +70,7 @@
 | L2 | [`avsectester.closed_loop.simulators.carla`](#avsectesterclosed_loopsimulatorscarla) |
 | L2 | [`avsectester.closed_loop.simulators.carla.autoware`](#avsectesterclosed_loopsimulatorscarlaautoware) |
 | L2 | [`avsectester.closed_loop.simulators.carla.autoware.container.apply_interception`](#avsectesterclosed_loopsimulatorscarlaautowarecontainerapply_interception) |
+| L2 | [`avsectester.closed_loop.simulators.carla.autoware.driving_system`](#avsectesterclosed_loopsimulatorscarlaautowaredriving_system) |
 | L2 | [`avsectester.closed_loop.simulators.carla.conversions`](#avsectesterclosed_loopsimulatorscarlaconversions) |
 | L2 | [`avsectester.closed_loop.simulators.carla.external_driving_system`](#avsectesterclosed_loopsimulatorscarlaexternal_driving_system) |
 | L2 | [`avsectester.closed_loop.simulators.carla.sensors`](#avsectesterclosed_loopsimulatorscarlasensors) |
@@ -815,9 +816,9 @@ Image harmonization with optional in-process PCTNet inference.
 | `ExposureHarmonizer.differentiable: ClassVar[bool] = True` | Whether input-image gradients are supported by this component. |
 | `ExposureHarmonizer.exposure_gain(composite: torch.Tensor, mask: torch.Tensor, background: torch.Tensor) -> torch.Tensor \| None` | Return the clipped gain from `composite`'s visible luminance to the reference. |
 | `ExposureHarmonizer.__call__(composite_rgb: np.ndarray, mask: np.ndarray, background_rgb: np.ndarray) -> np.ndarray` | Apply exposure matching and return uint8 RGB without changing mask-exterior pixels. |
-| `ClassicHarmonizer(color_transfer: bool = True, poisson: bool = True, preserve_chroma: bool = False, blend: str = "poisson", feather: float = 1.2, gain_range: tuple = (0.35, 1.2))` | Subclass of `Harmonizer`. Reinhard color transfer (match the patch's Lab mean/std to the scene) + Poisson seamless blend. |
+| `ClassicHarmonizer(color_transfer: bool = True, poisson: bool = True, preserve_chroma: bool = False, blend: str = "poisson", feather: float = 1.2, gain_range: tuple = (0.35, 1.2))` | Subclass of `Harmonizer`. Match foreground colors to the surrounding scene without learned weights. |
 | `ClassicHarmonizer.__call__(composite_rgb, mask, background_rgb)` | Transfer foreground color statistics and optionally blend its boundary with Poisson editing. |
-| `PCTNetHarmonizer(libcom_directory: str \| Path, device: str = "cuda:0", weights: str \| Path \| None = None, strict: bool = False)` | Subclass of `Harmonizer`. Learned harmonization via libcom's **PCTNet**, run **in-process**. |
+| `PCTNetHarmonizer(libcom_directory: str \| Path, device: str = "cuda:0", weights: str \| Path \| None = None, strict: bool = False)` | Subclass of `Harmonizer`. Color harmonization with libcom's PCTNet. |
 | `PCTNetHarmonizer.__call__(composite_rgb, mask, background_rgb)` | Harmonize visible foreground with PCTNet, applying the configured strict error policy. |
 <!-- api:end -->
 
@@ -1017,7 +1018,7 @@ The driving-system interface: an Observation in, an optional Control out.
 | `ObservationPipeline.localize(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Localize one pose timestamp, including timestamps without sensor frames. |
 | `ObservationPipeline.decision(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Apply decision input hooks after selecting delivered captures and history. |
 | `ObservationPipeline.process(observation: Observation, dispatcher: HookDispatcher) -> Observation` | Process a capture followed immediately by one driving decision. |
-| `AVStack()` | The driving system: an Observation in, an optional Control out. |
+| `AVStack()` | Consume an Observation and optionally return a Control. |
 | `AVStack.provides_detections: bool \| None = None` | Whether decisions expose detections compatible with detection metrics. |
 | `AVStack.history: HistoryRequirement = HistoryRequirement()` | Recorded input needed at the first decision, expressed as pose duration and sample count. |
 | `AVStack.decision_time_step: ClassVar[float \| None] = None` | Decision interval in seconds. None leaves the interval unrestricted. |
@@ -1194,7 +1195,7 @@ A driving-system placeholder for a simulator controlled by an external process.
 ### avsectester.closed_loop.avstacks.implemented.modular
 
 <!-- api:begin module=avsectester.closed_loop.avstacks.implemented.modular -->
-ModularAVStack — an AVStack backed by an avstack `ModularDrivingPipeline`.
+Driving system backed by an avstack `ModularDrivingPipeline`.
 
 | Name and signature | Meaning |
 |---|---|
@@ -1336,6 +1337,40 @@ nonnegative. Stepping before reset raises `RuntimeError`.
 | `time_headway_s` | Desired following time headway |
 | `ego_front_offset_m` | Distance from the rig origin to ego's front |
 
+The planner follows the route by horizontal arc length and continues along the endpoint tangent
+beyond the supplied points. With no route, it plans along a straight line ahead. The cruise
+reference `v0` is `cruise_speed_mps`. If omitted, `v0` is the larger of the ego speed at reset
+and `min_cruise_speed_mps`. The Intelligent Driver Model (IDM) free-road acceleration is
+`a_max * (1 - (v / v0)**delta)`, where `v` is ego speed, `a_max` is `max_acceleration_mps2`
+and `delta` is `acceleration_exponent`.
+
+The planner selects the nearest unserved sign within the forward and lateral limits. It places
+the stop target `stop_before_sign_m` before the sign projection. At signed remaining distance
+`d > 0`, the required deceleration is `v² / (2d)`. At `d <= 0`, it is `max_deceleration_mps2`.
+Braking latches at `comfortable_deceleration_mps2` and uses the required deceleration within
+the configured bounds. The latch clears if the target changes or disappears or the hold starts.
+Forecast braking has a separate latch. A hold starts when `v < stop_speed_mps` and the remaining
+distance is at most `stop_position_tolerance_m`. The planner holds a stationary trajectory
+for `stop_duration_s` and then marks that track ID served until reset.
+
+The lead is the nearest vehicle with positive projected arc distance up to
+`vehicle_lookahead_m` whose lateral span overlaps the ego corridor. The span is the signed
+lateral offset plus or minus `half_width_m`. The corridor extends
+`ego_half_width_m + lateral_margin_m` to each side, with touching edges counted as overlap.
+The following gap `s` is the along-route distance to the visible face minus `ego_front_offset_m`.
+The lead speed `v_lead` is its velocity along the route tangent, clamped at zero.
+
+```text
+s_star = s0 + max(0, v*T + v*(v - v_lead)/(2*sqrt(a_max*b)))
+a_follow = a_max * (1 - (v/v0)**delta - (s_star/s)**2)
+```
+
+Here `s0` is `min_gap_m`, `T` is `time_headway_s`, and `b` is `comfortable_deceleration_mps2`.
+A nonpositive gap requests `max_deceleration_mps2`. Each forecast step projects the lead at
+constant along-route speed and uses the smaller of the sign or cruise acceleration and the
+following acceleration within the configured bounds. Timed sign holds still keep ego stationary.
+Without a matching lead, the planner resumes cruise subject to stop-sign constraints.
+
 #### See also
 
 [Driving systems](../guides/driving-systems.md).
@@ -1353,18 +1388,29 @@ Known-height stop-sign ranging and camera-guided LiDAR vehicle-face ranging.
 
 #### Constraints and errors
 
-Known-size range is `sign_height_m / (2 tan(θ/2))`, where θ is the angle between box-top and
-box-bottom rays. It raises `TypeError` for a calibration that is not `CameraCalibration` and
-`ValueError` for a nonpositive sign height, a box without finite nonempty coordinates, invalid
-unprojected rays, a box angle that is zero or at least π, or an invalid rigid calibration
-transform.
+`estimate_stop_sign_position` raises `TypeError` for a calibration other than
+`CameraCalibration`. It raises `ValueError` for a nonpositive sign height, a box without
+finite nonempty coordinates, invalid unprojected rays, a box angle at most `1e-9` rad or at
+least π, or an invalid rigid calibration transform.
 
-`estimate_vehicle_face_points` accepts finite rig-coordinate LiDAR points with shape `(N, 3)`
-and returns left, center and right visible-face points with shape `(3, 3)` in rig meters.
-All three output z coordinates are zero. It raises `TypeError` for a calibration other than
-`CameraCalibration`, and `ValueError` for invalid points, boxes or rigid transforms, or fewer
-than five points in either the image region or nearest cluster. The sampling and percentile
-rules are described in [Driving systems](../guides/driving-systems.md#optional-vehicle-following).
+`estimate_vehicle_face_points` accepts finite rig-coordinate LiDAR points with shape `(N, 3)`.
+It raises `TypeError` for a calibration other than `CameraCalibration` and `ValueError` for
+invalid points, boxes or rigid transforms, or fewer than five points in either the image region
+or nearest cluster.
+
+`estimate_stop_sign_position` computes the range as `sign_height_m / (2 * tan(θ / 2))`, where θ
+is the angle between the rays through the top and bottom midpoints of the box. It scales the
+unit ray through the box center by this range and transforms the point into rig meters. Pixels
+use the camera's continuous pixel-center convention without an offset.
+
+`estimate_vehicle_face_points` projects LiDAR points with optical-camera z greater than 0.5 m
+into the image. It keeps the middle 80% of the box width and the band from 10% to 60% of the box
+height, measured from the top. The near cluster retains points with horizontal distance to the
+camera at most the 20th percentile of the selected distances plus 1 m.
+
+The output is a `(3, 3)` array in rig meters ordered left, center and right, with z equal to
+zero. All three x coordinates use the near cluster's 10th percentile x. Left and right y use
+the 95th and 5th percentile y, respectively. Center y is their midpoint.
 
 #### See also
 
@@ -1398,9 +1444,18 @@ raise `ValueError` when the selected camera has no `CameraCalibration` or RGB im
 `RuntimeError` after `close`. With vehicle following enabled, reset and decisions require the
 selected LiDAR's `LidarCalibration`, and decisions require a `PointCloud`. Missing inputs raise
 `ValueError` naming the LiDAR. Invalid LiDAR transforms or point arrays also raise `ValueError`.
-Vehicle detections without enough selected LiDAR points are skipped and counted.
 `rule_based_driving_adapter` raises `ValueError` when the factory has no `avstack_options` with
 a `YOLOXDetector` detector.
+
+When `vehicle_tracker` is enabled, the detection call uses
+`min(detector.score_threshold, vehicle_tracker.low_score_threshold)`. Stop signs still require
+`detector.score_threshold`, which also sets the bound scorer's `decision_threshold`. Without
+vehicle following, detection uses the configured threshold and the stack does not read LiDAR.
+
+The stack aligns LiDAR points to the camera capture rig using both capture poses when their
+timestamps differ. It skips a vehicle detection when its ranging raises `ValueError`, including
+when too few LiDAR points are selected, and increments `skipped_vehicle_detections`. With map
+navigation the planner follows the route centerline without choosing lane changes.
 
 #### See also
 
@@ -1438,9 +1493,43 @@ reused before `reset`, which also clears timestamps.
 
 `VehicleTrack.position` and `velocity` hold world XY arrays with shape `(2,)`. The `tracks`
 property returns detached snapshots, so editing returned arrays does not modify the tracker.
-`half_width_m` is half the latest measured left-to-right horizontal span, and `hits` counts
-associated measurements. The filter model and association are described in
-[Driving systems](../guides/driving-systems.md#optional-vehicle-following).
+
+`StopSignTracker` stores stationary sign positions and covariances in horizontal world
+coordinates. It transforms rig measurements and the camera position with ego's planar pose.
+For horizontal camera-to-sign range `d`, the measurement standard deviations are
+`hypot(range_sigma_fraction * d, min_position_sigma_m)` along the bearing and
+`hypot(bearing_sigma_rad * d, min_position_sigma_m)` perpendicular to it.
+
+Association considers only tracks present before the update. It greedily matches pairs in
+ascending squared Mahalanobis distance, using the sum of track and measurement covariances
+and the gate `max_association_mahalanobis_distance**2`. Each measurement and track can match
+once per update. Unmatched measurements initialize tracks. Matched tracks receive a
+bearing-only extended Kalman update with no process noise. Bearing residuals wrap to
+`(-π, π]`. Tracks persist until `reset`.
+
+`VehicleTracker` transforms the visible-face measurements with ego's planar pose and uses
+each face center as a horizontal world position measurement. The constant-velocity Kalman
+state is `[x, y, vx, vy]`. Independent planar acceleration noise scales by `dt**2 / 2` for
+position and `dt` for velocity, with standard deviation `acceleration_noise_mps2`. The
+isotropic position measurement has standard deviation
+`max(min_measurement_noise_m, measurement_noise_fraction * horizontal_range)`, where
+`horizontal_range` is measured from the rig origin to the face center. A new track starts
+with the measurement covariance for position and zero velocity with standard deviation
+`initial_velocity_sigma_mps`.
+
+Measurements at or above `high_score_threshold` first associate with all retained tracks,
+including lost tracks. Measurements at or above `low_score_threshold` and below the high
+threshold then associate with still unmatched tracks that were matched or created in the
+previous update. Each stage greedily selects the lowest squared Mahalanobis innovation at or below
+`association_gate_chi2`, using each track and measurement once. Unmatched high-score
+measurements start tracks. Scores below `low_score_threshold` are ignored.
+
+`half_width_m` is half the last measured horizontal distance between the left and right
+face points. `hits` counts measurements, including initialization. A track is confirmed at
+`min_hits` and appears in `tracks` if matched in the latest update. A missed track remains
+available for reacquisition with its predicted state, and is deleted at
+`max_missed_updates` consecutive misses. Equal timestamps skip motion prediction and allow
+measurement updates. Backward timestamps are rejected.
 
 #### See also
 
@@ -1526,7 +1615,7 @@ Ordered attack and defense callbacks with per-run lifecycle management.
 
 | Name and signature | Meaning |
 |---|---|
-| `StageEmitter` | The emitter a simulator runtime or driving system is bound to, normally the dispatcher. |
+| `StageEmitter` | Deliver a supported stage value to registered callbacks. |
 | `StageEmitter.emit(stage: str, value: Any, sensor: str \| None = None) -> Any` | Run registered callbacks for a supported stage and return the resulting value. |
 | `UnsupportedStageError` | Subclass of `ValueError`. A requested hook stage is supported by neither the simulator runtime nor driving system. |
 | `CallInputs(args: tuple = (), kwargs: dict[str, Any] = dict())` | Inputs to a component pre-hook, retaining positional and keyword arguments. |
@@ -1557,7 +1646,7 @@ Ordered attack and defense callbacks with per-run lifecycle management.
 | `HookDispatcher.invoke(handler: Any, value: Any, context: StageContext) -> Any` | Invoke a stage handler while holding the session's callback lock. |
 | `HookDispatcher.stage_context(stage: str, sensor: str \| None = None) -> StageContext` | Capture current physical state and model-visible values for a callback. |
 | `HookDispatcher.record_output(context: StageContext, name: str, value: Any) -> None` | Snapshot a named output. Reject recording outside an active dispatcher scope. |
-| `HookDispatcher.drain_outputs() -> list[RecordedOutput]` | Transfer recorded outputs to a consumer without retaining the run's history. |
+| `HookDispatcher.drain_outputs() -> list[RecordedOutput]` | Return a list of outputs in recorded order and clear `outputs` in place. |
 | `HookDispatcher.emit(stage: str, value: Any, sensor: str \| None = None) -> Any` | Transform a value through the supported stage's ordered callbacks. |
 | `HookDispatcher.emit_message(stage: str, value: RosMessage, state: WorldSnapshot, *, step: int, outputs: list[RecordedOutput]) -> RosMessage` | Run native message hooks using the active decision and detached physical state. |
 | `HookDispatcher.observe(observation: Observation) -> Observation` | Apply the driving system's ObservationPipeline with this run's ordered hooks. |
@@ -1647,7 +1736,7 @@ Timestamp pairing and rigid transforms for a projected ROS frame pair.
 | Name and signature | Meaning |
 |---|---|
 | `Pose(position: Vector, rotation: Quaternion)` | A position and its orientation as an xyzw quaternion. |
-| `PoseDelta(original: Pose, replacement: Pose, rotation: np.ndarray, translation: np.ndarray)` | Rigid displacement of a pose from one channel to its replacement. |
+| `PoseDelta(original: Pose, replacement: Pose, rotation: np.ndarray, translation: np.ndarray)` | Rigid displacement from an original pose to its replacement. |
 | `PoseDelta.between(original: Pose, replacement: Pose) -> PoseDelta \| None` | Compute replacement times inverse original. None is an exact identity. |
 | `PoseDelta.apply(pose: Pose) -> Pose` | Apply the displacement without re-rounding an exact copy of the original. |
 | `Projected(message: T, pairs: tuple[tuple[PoseDelta \| None, bool], ...])` | Subclass of `Generic`. A queued TF message and the matched or fallback pose correction for each target. |
@@ -1669,8 +1758,8 @@ Translate ROS message fields into NumPy buffers in the relay process.
 | `OCCUPANCY_GRID = "nav_msgs/msg/OccupancyGrid"` | The ROS type name for an occupancy grid. |
 | `POINT_CLOUD = "sensor_msgs/msg/PointCloud2"` | The ROS type name for a structured point cloud. |
 | `header_stamp_ns(message: Any) -> int \| None` | Read a header or direct ROS stamp where the type provides one. |
-| `publishable_fields(fields: dict[str, Any], type_name: str) -> dict[str, Any]` | Prepare fields for ROS assignment after a payload replacement. |
-| `to_fields(message: Any, type_name: str) -> dict[str, Any]` | Read ROS fields, including fields and row strides of structured clouds. |
+| `to_fields(message: Any, type_name: str) -> dict[str, Any]` | Read ROS fields, packing fixed-numeric message sequences into structured arrays. |
+| `to_message(fields: Mapping[str, Any], message_type: type, type_name: str) -> Any` | Build a ROS message from fields using its declared layouts. |
 <!-- api:end -->
 
 ### avsectester.closed_loop.ros_interception.wire
@@ -2008,11 +2097,7 @@ Autoware lifecycle hosting for native CARLA ROS 2.
 
 | Name and signature | Meaning |
 |---|---|
-| `AutowareDrivingSystem(*, gpu: int, ros_domain_id: int, autoware_data_directory: str \| Path, assets_directory: str \| Path, dds_directory: str \| Path, work_directory: str \| Path, image: str = _DEFAULT_IMAGE, launch_arguments: Mapping[str, str \| int \| float \| bool] \| None = None, startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0, localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0, distortion_check_s: float = 12.0, modified_topics: Sequence[str] = (), observed_topics: Sequence[str] = ())` | Host a local Autoware image as a separate container for each CARLA run. |
-| `AutowareDrivingSystem.carla_publishes_tf: bool` | Disable CARLA's transforms as in the official `autoware_demo.py`. |
-| `AutowareDrivingSystem.identity: dict[str, Any]` | Return result-affecting Autoware settings for preparation compatibility. |
-| `AutowareDrivingSystem.interception: InterceptionDeclaration \| None` | Return the selected ROS topic stages and their routing requirements. |
-| `AutowareDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Start one Autoware session asynchronously and return its readiness interface. |
+| `AutowareDrivingSystem` | [AutowareDrivingSystem](#avsectesterclosed_loopsimulatorscarlaautowaredriving_system) |
 <!-- api:end -->
 
 ### avsectester.closed_loop.simulators.carla.autoware.container.apply_interception
@@ -2023,6 +2108,21 @@ Redirect selected Autoware outputs in the writable layer of a run container.
 | Name and signature | Meaning |
 |---|---|
 | `apply_rewrites(specification: Path, root: Path) -> None` | Require each producer definition exactly once before writing any launch file. |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla.autoware.driving_system
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.autoware.driving_system -->
+Own an Autoware process group and run ADAPI readiness checks for each CARLA run.
+
+| Name and signature | Meaning |
+|---|---|
+| `AutowareDrivingSystem(*, gpu: int, ros_domain_id: int, autoware_data_directory: str \| Path, assets_directory: str \| Path, dds_directory: str \| Path, work_directory: str \| Path, image: str = DEFAULT_AUTOWARE_IMAGE, launch_arguments: Mapping[str, str \| int \| float \| bool] \| None = None, startup_timeout_s: float = 300.0, engage_timeout_s: float = 10.0, localization_tolerance_m: float = 0.5, localization_tolerance_deg: float = 5.0, distortion_check_s: float = 12.0, modified_topics: Sequence[str] = (), observed_topics: Sequence[str] = ())` | Host a local Autoware image as a separate container for each CARLA run. |
+| `AutowareDrivingSystem.carla_publishes_tf: bool` | Disable CARLA's transforms as in the official `autoware_demo.py`. |
+| `AutowareDrivingSystem.identity: dict[str, Any]` | Return result-affecting Autoware settings for preparation compatibility. |
+| `AutowareDrivingSystem.interception: InterceptionDeclaration \| None` | Return the selected ROS topic stages and their routing requirements. |
+| `AutowareDrivingSystem.start(context: ExternalDrivingContext) -> ExternalDrivingSession` | Start one Autoware session asynchronously and return its readiness interface. |
+| `DEFAULT_AUTOWARE_IMAGE = "ghcr.io/autowarefoundation/autoware@sha256:1db2988caa5dc5bae41548a8d556d0b57f55eb4dd63685426d94fd9c7a786034"` | Pinned default image for hosted Autoware. |
 <!-- api:end -->
 
 ### avsectester.closed_loop.simulators.carla.conversions
@@ -3602,7 +3702,8 @@ Validated detector/rollout optimization options and offline dispatch.
 `DetectorPatchOptimization` raises `TypeError` for an optimizer other than `PGD` and
 `ValueError` for an empty `scorer_id` or device, a `samples_per_scene` other than `"all"` or an
 integer of at least four, a
-nonpositive count, deceleration or `progress_interval`, or a `confidence_margin` outside [0, 1]. During the offline phase, `scorer_id=None` with zero or
+nonpositive count, deceleration or `progress_interval`, or a `confidence_margin` outside [0, 1].
+During the offline phase, `scorer_id=None` with zero or
 several differentiable scorers, or a scorer without `sensor_id` or `decision_threshold`, raises
 `ValueError`, and so does a training segment with fewer than four eligible frames. The closest
 trained route distance to the stop line is `d_min = v² / (2a)`, where `a` is

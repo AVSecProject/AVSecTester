@@ -87,6 +87,8 @@ class RuleBasedPlanner:
 
     The default stopping target is 5.5 m before the sign along the route.
 
+    If ``cruise_speed_mps`` is omitted, the cruise reference uses the speed at reset with
+    ``min_cruise_speed_mps`` as a lower bound.
     Before braking, IDM's free-flow term is
     max_acceleration_mps2 * (1 - (v / cruise_speed)**acceleration_exponent).
     For a stop target at remaining distance d, required = v**2/(2*d) when d > 0 and
@@ -116,7 +118,8 @@ class RuleBasedPlanner:
     A nonpositive gap requests maximum deceleration. The smaller sign/cruise and
     following acceleration is bounded by the configured acceleration limits.
     Forecast lead motion has constant along-route speed. Timed sign stops still
-    hold the ego stationary. Without a lead, sign and cruise behavior is unchanged.
+    hold the ego stationary. When no matching lead remains, the planner resumes cruising
+    unless a stop sign constrains speed.
     min_gap_m is the desired stationary gap, without a hard clearance constraint.
 
     min_gap_m, time_headway_s, ego_front_offset_m and lateral_margin_m must be nonnegative.

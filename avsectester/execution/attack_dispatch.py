@@ -200,8 +200,8 @@ class AttackDispatcher:
             if isinstance(action, AVStackAttackAction):
                 if action.stage == "sensors.post":
                     raise UnsupportedStageError(
-                        "AVStackAttackAction cannot target sensors.post; "
-                        "use SensorAttackAction to modify sensor data")
+                        "AVStackAttackAction cannot target sensors.post. "
+                        "Use SensorAttackAction to modify sensor data")
                 if (not message_stage and action.stage not in _STAGE_ORDER) or action.stage not in self._available:
                     raise UnsupportedStageError(f"Unsupported attack action stage: {action.stage!r}")
             if isinstance(action, SensorAttackAction) and action.active_for_us is not None:

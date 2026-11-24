@@ -104,7 +104,7 @@ def read_scene_mesh(usdz_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     try:
         import trimesh
     except ImportError as error:
-        raise ImportError("NuRec scene meshes require trimesh; install avsectester[nurec]") from error
+        raise ImportError("NuRec scene meshes require trimesh. Install avsectester[nurec]") from error
     vertices, faces = [], []
     offset = 0
     with zipfile.ZipFile(usdz_path, "r") as archive:

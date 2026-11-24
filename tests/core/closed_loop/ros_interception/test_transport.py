@@ -1,21 +1,16 @@
+"""Framed messages over real Unix socket connections."""
+
 import math
 import os
 import socket
 from threading import Event, Thread, get_ident
-from time import monotonic, sleep
 
 import numpy as np
 import pytest
 
 from avsectester.closed_loop.ros_interception.channel import RelayChannel, RelayConnection
 from avsectester.closed_loop.ros_interception.wire import receive_frame, send_frame
-
-
-def _wait_until(condition):
-    deadline = monotonic() + 5.
-    while not condition() and monotonic() < deadline:
-        sleep(.001)
-    assert condition()
+from tests.fakes import wait_until
 
 
 def test_relay_channel_routes_frames(tmp_path):
@@ -52,13 +47,13 @@ def test_relay_channel_routes_frames(tmp_path):
         ):
             connect(left)
             send_frame(left, {"kind": "ready"})
-            _wait_until(lambda: channel.relay_count == 1)
+            wait_until(lambda: channel.relay_count == 1)
             assert not channel.ready
             with pytest.raises(RuntimeError, match="has not connected all relays"):
                 channel.send({"kind": "origin"})
             connect(right)
             send_frame(right, {"kind": "ready"})
-            _wait_until(lambda: channel.ready)
+            wait_until(lambda: channel.ready)
             assert channel.relay_count == 2
             channel.start(handle)
 
@@ -84,15 +79,14 @@ def test_relay_channel_routes_frames(tmp_path):
             assert received[:2] == [(0, "first"), (0, "second")]
             assert set(received[2:]) == {(0, "left"), (1, "right")}
             send_frame(right, {"kind": "error", "reason": "relay graph failed"})
-            _wait_until(lambda: not channel.ready)
+            wait_until(lambda: not channel.ready)
             with pytest.raises(RuntimeError, match="relay graph failed"):
                 channel.check()
             send_frame(left, {"kind": "message", "sequence": "after failure"})
-            channel.close()
-            assert len(received) == 4
     finally:
         release.set()
         channel.close()
+    assert len(received) == 4
     assert not path.exists()
 
 
@@ -103,9 +97,9 @@ def test_relay_channel_rejects_messages_before_start(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
             peer.connect(os.fspath(path))
             send_frame(peer, {"kind": "ready"})
-            _wait_until(lambda: channel.ready)
+            wait_until(lambda: channel.ready)
             send_frame(peer, {"kind": "message", "id": 7})
-            _wait_until(lambda: not channel.ready)
+            wait_until(lambda: not channel.ready)
             with pytest.raises(RuntimeError, match="sent 'message' before message processing started"):
                 channel.check()
     finally:
@@ -118,7 +112,7 @@ def test_relay_notifies_frames_and_disconnect(tmp_path):
     relay = RelayConnection(channel.path, notify=notified.set)
     try:
         relay.send({"kind": "ready"})
-        _wait_until(lambda: channel.ready)
+        wait_until(lambda: channel.ready)
         channel.send({"kind": "origin"})
         assert notified.wait(5.)
         (frame,) = relay.drain()
@@ -140,7 +134,9 @@ def test_wire_large_frame_and_partial_disconnect():
                       "offsets": [0, 8, 12], "itemsize": 20})
     raw = bytearray(range(80))
     points = np.frombuffer(raw, dtype=dtype)[::2]
-    large = np.arange(2 ** 21, dtype=np.int32)
+    large = np.zeros(2 ** 19, dtype=[("pose", [("x", "<f8"), ("y", "<f8")]), ("speed", "<f4")])
+    large["pose"]["x"] = np.arange(large.size)
+    large["speed"] = 2.
     frame = {"nested": [{"points": points, "opaque": bytes(raw[:4]), "gain": float("nan")}],
              "large": large, "small": [b"a"] * 1100}
     received = []

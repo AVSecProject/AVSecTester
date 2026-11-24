@@ -28,11 +28,11 @@ def split_segments(
     ``frames`` is an ordered, consecutive timeline of one scenario, normally
     ``ScenarioView.frames``, and includes the terminal frame. ``eligible(frame)`` is called once
     for every frame except the last, in order, and returns whether an attack decision may be
-    made at that frame. The last frame is never a decision frame; it only ends a segment.
+    made at that frame. The last frame is never a decision frame. It only ends a segment.
 
     A segment covers ``decision_steps`` consecutive eligible decision frames and stops at the
     frame after them, so ``segment.decision_steps == decision_steps``. A frame that is not
-    eligible ends the current run; no segment crosses it. With ``keep_tail``, the remainder of a
+    eligible ends the current run. No segment crosses it. With ``keep_tail``, the remainder of a
     run that is shorter than ``decision_steps`` becomes one shorter segment instead of being
     dropped.
     """
@@ -54,7 +54,7 @@ def split_segments(
     for index in range(len(flags) + 1):
         if index < len(flags) and flags[index]:
             continue
-        # frames[run_start:index] are eligible decision frames; frames[index] ends the run.
+        # Eligible decision frames are frames[run_start:index]. The run ends at frames[index].
         cursor = run_start
         while cursor + decision_steps <= index:
             result.append(AttackSegment(frames[cursor].scenario_id, frames[cursor],

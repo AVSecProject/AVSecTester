@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 class AttackSegment:
     """One selected scenario and decision interval with attack-owned data.
 
-    Decisions run at positions ``[start, stop)``; ``stop`` is the terminal state. Candidate
+    Decisions run at positions ``[start, stop)``. ``stop`` is the terminal state. Candidate
     rollouts use the same record. ``user_data`` stores all attack-specific information without
     framework interpretation. Persisted values must be JSON-like data or NumPy arrays.
     """
@@ -84,7 +84,7 @@ class Attack(ABC):
     def build_metadata(self, scenario: ScenarioView) -> Sequence[AttackSegment]:
         """Select segments, or leave selection to a shared metadata.load file."""
         raise NotImplementedError(
-            f"{type(self).__name__} does not select segments; set metadata.load"
+            f"{type(self).__name__} does not select segments. Set metadata.load"
         )
 
     def validate_segment(self, segment: AttackSegment) -> None:

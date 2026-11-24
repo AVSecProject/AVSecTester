@@ -1,9 +1,13 @@
 """Camera observations and learned-model boundaries shared by driving-system tests."""
-import sys
-from types import ModuleType, SimpleNamespace
+from copy import deepcopy
+from dataclasses import replace
 
 import numpy as np
 import pytest
+
+from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+from avsectester.data_types import DeliveredAcquisition, Observation, TimedStateEstimate
+from tests import fakes
 
 
 @pytest.fixture
@@ -11,99 +15,50 @@ def alpamayo_model_boundary(monkeypatch):
     base = pytest.importorskip("alpasim_driver.models.base")
     pytest.importorskip("alpasim_grpc.v0.egodriver_pb2")
     pytest.importorskip("alpasim_driver.navigation")
-
-    class PolicyModel:
-        def __init__(self):
-            self.closed = False
-            self.last_input = None
-            self.prediction = base.ModelPrediction(
-                candidate_positions=np.array([[[1., 0., 0.], [2., 0., 0.]]]),
-                candidate_rotations=np.tile(np.eye(3), (1, 2, 1, 1)),
-                selected_index=0, selected_plan="forward", reasoning_text="clear",
-            )
-
-        def predict(self, inputs):
-            self.last_input = inputs
-            return self.prediction
-
-        def close(self):
-            self.closed = True
-
-    class ModelLoader:
-        @classmethod
-        def from_config(cls, **options):
-            model = PolicyModel()
-            model.options = options
-            return model
-
-    # Keep real AlpaSim protobufs, navigation and model input/output records. Only weights
-    # and checkpoint-backed construction are replaced.
-    name = "alpasim_driver.models.alpamayo1_5_model"
-    module = ModuleType(name)
-    module.Alpamayo15Model = ModelLoader
-    monkeypatch.setitem(sys.modules, name, module)
-    return SimpleNamespace(create=PolicyModel)
+    return fakes.alpamayo_model_boundary(base, monkeypatch)
 
 
 @pytest.fixture
 def camera_detector_boundary(monkeypatch):
-    """Replace checkpoint-backed image inference, leaving the real camera policy intact."""
     pytest.importorskip("avstack.config")
     api = pytest.importorskip("mmdet.apis")
-    import torch
-    from mmdet.models.data_preprocessors import DetDataPreprocessor
-    from avstack.config import MODELS
-    import avstack.modules.perception.object2dfv  # noqa: F401
-
-    class ImageModel(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.gain = torch.nn.Parameter(torch.tensor(1.))
-            self.data_preprocessor = DetDataPreprocessor()
-            self.boxes = [[8., 8., 16., 16.]]
-            self.labels = [0]
-            self.last_image = None
-            self.last_images = []
-
-        def extract_feat(self, images):
-            values = torch.nn.functional.avg_pool2d(images.mean(dim=1, keepdim=True), 4)
-            return (values * self.gain / 255.,)
-
-        def rpn_head(self, features):
-            return (list(features), [])
-
-        def predict(self, rgb):
-            self.last_image = rgb.copy()
-            return SimpleNamespace(pred_instances=SimpleNamespace(
-                bboxes=torch.tensor(self.boxes).reshape(-1, 4),
-                scores=torch.full((len(self.boxes),), .9), labels=torch.tensor(self.labels),
-            ))
-
-    def predict(detector, images):
-        if isinstance(images, list):
-            detector.last_images = [image.copy() for image in images]
-            return [detector.predict(image) for image in images]
-        return detector.predict(images)
-
-    model = ImageModel()
-    # Only the learned detector is replaced; preprocessing, scorer and driving adapter stay real.
-    monkeypatch.setitem(MODELS.module_dict, "MMDetObjectDetector2D",
-                        lambda **options: SimpleNamespace(model=model))
-    monkeypatch.setattr(api, "inference_detector", lambda detector, images: predict(detector, images))
-    return model
+    return fakes.camera_detector_boundary(api, monkeypatch)
 
 
 @pytest.fixture
 def camera_observation():
-    from avsectester.data_types import Observation
     return lambda: Observation(0., 0, {"front": np.zeros((32, 32, 3), np.uint8)})
+
+
+def synthetic_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=4.,
+                                  acceleration=0., yaw=0., route=None):
+    """A small synthetic recording supplied to policy tests as actual observed history."""
+    observations = []
+    for index in range(count):
+        elapsed = index * time_step
+        time = start_time + elapsed
+        distance = speed * elapsed + .5 * acceleration * elapsed ** 2
+        state = PlanarEgoState(x=distance * float(np.cos(yaw)), y=distance * float(np.sin(yaw)),
+                        yaw=yaw, speed=speed + acceleration * elapsed, t=time,
+                        acceleration=acceleration)
+        observations.append(Observation(
+            time, index, {"front": np.full((4, 6, 3), index, np.uint8)},
+            vehicle_state=state, ego_speed=state.speed, route=deepcopy(route)))
+    # The first policy decision receives all recorded context in one incremental delivery.
+    origin = min(15, len(observations) - 1)
+    initial = observations[origin]
+    states = tuple(TimedStateEstimate(round(item.t * 1e6), item.t,
+                    item.vehicle_state, item.ego_speed) for item in observations[:origin + 1])
+    samples = tuple(DeliveredAcquisition(state.time_us, item.t, item.frame,
+                   item.sensor_data["front"], item.calibration.get("front"), state,
+                   item.frame - origin) for item, state in zip(observations[:origin + 1], states))
+    observations[origin] = replace(initial, deliveries={"front": samples}, state_estimates=states)
+    return tuple(observations)
 
 
 @pytest.fixture
 def alpamayo_observations():
-    from tests.fakes import recorded_policy_observations
-
-    return recorded_policy_observations
+    return synthetic_policy_observations
 
 
 @pytest.fixture
@@ -113,13 +68,11 @@ def policy_observation(alpamayo_observations):
 
 @pytest.fixture
 def rule_based_detector_model():
-    from tests.fakes import yolox_detection_model
-
     stop = [0.] * 80
     stop[11] = 1.
     car = [0.] * 80
     car[2] = 1.
-    return yolox_detection_model([
+    return fakes.yolox_detection_model([
         [50., 40., 4., 4., .9, *stop],
         [10., 20., 4., 4., .95, *car],
     ])
@@ -127,8 +80,6 @@ def rule_based_detector_model():
 
 @pytest.fixture
 def rule_based_observation():
-    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
-    from avsectester.data_types import Observation
     from avsectester.geometry import CameraCalibration, PinholeCamera
     from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 

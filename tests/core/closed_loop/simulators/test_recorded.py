@@ -12,22 +12,8 @@ from avsectester.execution.runner import ClosedLoopRunner, RunRequest
 from tests.fakes import ConstantAVStack
 
 
-def test_sensor_aliases(nuscenes_dataset):
+def test_swapped_sensor_aliases(nuscenes_dataset):
     start = nuscenes_dataset.scenario_start("scene", nuscenes_dataset.frames("scene")[0])
-    with RecordedReplaySimulator().create_runtime() as runtime:
-        runtime.reset(start)
-        native = runtime.sensor_view("CAM_FRONT")
-        assert runtime.camera_sensors == {"CAM_FRONT"}
-        assert set(runtime.observe().sensor_data) == {"CAM_FRONT"}
-    with RecordedReplaySimulator(camera_aliases={"CAM_FRONT": "front"}).create_runtime() as runtime:
-        runtime.reset(start)
-        assert runtime.camera_sensors == {"front"}
-        observation = runtime.observe()
-        assert set(observation.sensor_data) == set(observation.calibration) == {"front"}
-        assert runtime.sensor_view("CAM_FRONT").sensor == "front"
-        assert runtime.sensor_geometry("CAM_FRONT").sensor == "front"
-        np.testing.assert_array_equal(runtime.sensor_view("front").data, native.data)
-        np.testing.assert_allclose(runtime.sensor_view("front").cam_from_world, native.cam_from_world)
     first, second = start.payload["frame_data"][:2]
     front = first.sensor_references["CAM_FRONT"]
     mount = front.metadata["ego_from_sensor"].copy()

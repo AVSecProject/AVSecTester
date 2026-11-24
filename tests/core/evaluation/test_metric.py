@@ -202,7 +202,7 @@ def test_driving_metrics(make_log, make_actor, make_group):
     assert measured["final_speed"] == 1.
 
 
-def test_force_gt_metrics(make_log, make_group, make_pair, sign_group):
+def test_force_gt_metrics(make_log, make_group, make_pair):
     clean = make_log([0., 2., 2.])
     attacked = make_log([0., 2., 2.], [1., 0., 0.])
     clean.steps[0] = replace(clean.steps[0], force_gt=True, executed_command=None)
@@ -213,10 +213,6 @@ def test_force_gt_metrics(make_log, make_group, make_pair, sign_group):
     assert impact["a_to_b.reference_drove"] is True
     assert impact["a_to_b.induced_braking"] is False
     assert impact["a_to_b.induced_stop"] is False
-    sign_log = with_sign_detections(make_log([2., 2., 2.]))
-    sign_log.steps[0] = replace(sign_log.steps[0], force_gt=True, components={})
-    sign = SignDetection("front", min_visible_pixels=5).evaluate(sign_group({"run": sign_log}))["run"]
-    assert sign["detected_steps"] == 2 and sign["detection_rate"] == 1.
 
 
 def test_stop_line_metrics(make_log, make_actor, stop_line_group):

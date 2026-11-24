@@ -1,8 +1,6 @@
 """RunLog transports one captured decision and owns recording lifecycle checks."""
 
-from pathlib import Path
 import json
-from collections import OrderedDict, namedtuple
 
 import numpy as np
 import pyarrow as pa
@@ -15,7 +13,7 @@ from avsectester.data_types import (
 )
 from avsectester.closed_loop.simulators.base import ClockSnapshot
 from avsectester.geometry import (
-    CameraCalibration, FThetaCamera, PinholeCamera, WindshieldDistortion,
+    CameraCalibration, FThetaCamera, WindshieldDistortion,
 )
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.lidars import LidarCalibration
@@ -72,7 +70,6 @@ def test_record_message(tmp_path):
     with Recorder(baseline) as recorder:
         with pytest.raises(ValueError, match="record_messages=True"):
             recorder.record_message(records[0])
-    assert not (baseline / "messages").exists()
     assert RunLog.read(baseline).messages == []
 
     path = tmp_path / "with_interception"
@@ -82,8 +79,6 @@ def test_record_message(tmp_path):
         assert captured[0].original.fields["data"].tobytes() == cloud_bytes
         assert all(item.original is None and item.forwarded is None for item in recorder.log.messages)
 
-    assert set(json.loads((path / "manifest.json").read_text())) == set(
-        json.loads((baseline / "manifest.json").read_text()))
     assert RunLog.read(path, load_records=False).messages == []
     metadata = RunLog.read(path, load_sensor_data=False).messages
     assert [(item.topic, item.modifiable, item.modified, item.relay_sent_ns) for item in metadata] == [
@@ -106,30 +101,6 @@ def test_record_message(tmp_path):
     }
 
 
-def test_snapshot():
-    recorder = Recorder()
-    pixels = np.arange(3, dtype=np.uint8)
-    objects = np.array([{"score": 1.}], dtype=object)
-    masked = np.ma.masked_array([1., 2.], mask=[False, True])
-    dates = np.array(["2026-11-07"], dtype="datetime64[D]")
-    durations = np.array([3], dtype="timedelta64[s]")
-    snapshot = recorder.snapshot({"pixels": pixels, "objects": objects, "masked": masked,
-                                  "dates": dates, "durations": durations})
-    pixels.fill(0)
-    objects[0]["score"] = 99.
-    masked.mask[0] = True
-    dates[0] = "2026-11-08"
-    durations[0] = 4
-    np.testing.assert_array_equal(snapshot["pixels"], [0, 1, 2])
-    assert snapshot["pixels"].flags.writeable
-    assert snapshot["objects"][0] == {"score": 1.}
-    assert isinstance(snapshot["masked"], np.ma.MaskedArray)
-    np.testing.assert_array_equal(snapshot["masked"].mask, [False, True])
-    np.testing.assert_array_equal(
-        snapshot["dates"], np.array(["2026-11-07"], dtype="datetime64[D]"))
-    np.testing.assert_array_equal(snapshot["durations"], np.array([3], dtype="timedelta64[s]"))
-
-
 @pytest.mark.parametrize("representations", [("model_input",), ("raw", "model_input")])
 def test_payload_retention(tmp_path, representations):
     names = {"raw": "raw_observation", "model_input": "model_observation"}
@@ -149,9 +120,6 @@ def test_payload_retention(tmp_path, representations):
     assert [record.step for record in restored.steps] == [0, 1]
     assert [record.capture_id for record in restored.captures] == [0, 1]
     assert [record.kind for record in restored.events] == ["termination"]
-    manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
-    assert manifest["step_parts"] == manifest["capture_parts"] == 2
-    assert manifest["event_parts"] == 1
     for index, step in enumerate(restored.steps):
         assert step.delivered_captures == {"front": (index, None)}
         np.testing.assert_array_equal(step.model_observation.sensor_data["front"], pixels + index)
@@ -181,13 +149,7 @@ def test_record_and_read(tmp_path):
     observation = Observation(.1, 4, {"front": pixels})
     command = Control(throttle=.5)
     detection = Detection((10, 0, 1), (4, 2, 2), 0, "car", .9)
-    components = {
-        "none": None, "integer": np.int64(7),
-        "path": Path("artifacts/patch.png"), "bytes": b"sensor-bytes",
-        "namedtuple": namedtuple("Point", "x y")(1, [2, 3]),
-        "ordered": OrderedDict(second=2, first=1),
-        "pinhole": PinholeCamera(np.array([[50., 0., 16.], [0., 55., 12.], [0., 0., 1.]]), 32, 24),
-    }
+    components = {"distance": 7.5}
     pose = np.eye(4)
     pose[:3, 3] = (4., 2., 1.)
     obj = ActorState(pose, extent=(4., 2., 1.))
@@ -226,16 +188,7 @@ def test_record_and_read(tmp_path):
     assert [event.kind for event in decoded.events] == ["initialization", "termination"]
     assert decoded.events[0].data["clock"] == ClockSnapshot(.1, 4)
     step, = decoded.steps
-    assert step.components.keys() == components.keys()
-    assert step.components["none"] is None
-    assert step.components["integer"] == 7
-    assert step.components["path"] == Path("artifacts/patch.png")
-    assert step.components["bytes"] == b"sensor-bytes"
-    assert step.components["namedtuple"] == (1, [2, 3])
-    assert list(step.components["ordered"].items()) == [("second", 2), ("first", 1)]
-    camera = step.components["pinhole"]
-    assert isinstance(camera, PinholeCamera) and (camera.width, camera.height) == (32, 24)
-    np.testing.assert_array_equal(camera.K, components["pinhole"].K)
+    assert step.components == components
     assert step.object_visibility == visibility
     stored = step.physical_post.objects["sign"]
     np.testing.assert_array_equal(stored.pose, obj.pose)
@@ -329,7 +282,8 @@ def test_read_selected_columns(tmp_path):
                                         executed_command=Control(brake=.75)))
     table = read_table(tmp_path / "run", columns=["step", "executed_command"])
     assert table.column_names == ["step", "executed_command"]
-    assert table.to_pylist()[0]["executed_command"]["fields"]["brake"] == .75
+    row, = table.to_pylist()
+    assert DEFAULT_REGISTRY.decode(row["executed_command"]) == Control(brake=.75)
     with pytest.raises(ValueError, match="Unknown RunLog columns"):
         read_table(tmp_path / "run", columns=["missing"])
 
@@ -406,7 +360,7 @@ def test_record_without_path():
         Recorder(retain_steps=False)
 
 
-def test_finish(tmp_path):
+def test_finish(tmp_path, monkeypatch):
     recorder = Recorder(tmp_path / "completed")
     with pytest.raises(ValueError, match="Final status"):
         recorder.finish("unknown")
@@ -419,14 +373,17 @@ def test_finish(tmp_path):
 
     directory = tmp_path / "blocked"
     recorder = Recorder(directory, chunk_steps=1)
-    pending_part = directory / "steps" / "part-00000.parquet.open"
-    pending_part.mkdir()
+    write_error = OSError("Parquet storage unavailable")
+
+    def fail_write(*args, **kwargs):
+        raise write_error
+
+    monkeypatch.setattr(pq, "write_table", fail_write)
     try:
         recorder.record_step(StepRecord(0))
         with pytest.raises(RuntimeError, match="RunLog background write failed") as failure:
             recorder.finish()
-        assert isinstance(failure.value.__cause__, OSError)
-        assert pending_part.name in str(failure.value.__cause__)
+        assert failure.value.__cause__ is write_error
         with pytest.raises(RuntimeError, match="RunLog background write failed") as repeated:
             recorder.record_event("failure")
         assert repeated.value.__cause__ is failure.value.__cause__

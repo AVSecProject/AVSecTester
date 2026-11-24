@@ -1,1 +1,1 @@
-"""Private transport for a hosted ROS 2 producer-side relay."""
+"""ROS topic declarations, forwarding and observation for hosted driving systems."""

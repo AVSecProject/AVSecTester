@@ -97,7 +97,8 @@ prerequisites.
 
 The NuRec configuration records the front-wide camera's `model_input` representation.
 The NuRec and nuScenes configurations use the default metrics, `DrivingMetrics` and
-`TrajectoryDeviation`. The CARLA configuration sets `evaluation.metrics` to `DrivingMetrics`
+`TrajectoryDeviation`. The evaluator adds `DetectionMetrics` when every completed run provides
+detections at every step. The CARLA configuration sets `evaluation.metrics` to `DrivingMetrics`
 and `StopImpact`.
 Inspect their evidence with [Evaluation](../guides/evaluation.md).
 

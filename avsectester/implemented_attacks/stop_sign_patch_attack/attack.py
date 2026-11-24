@@ -146,7 +146,7 @@ class StopSignPatchAttack(Attack):
     ) -> tuple[ObjectAsset, np.ndarray]:
         """Share the selected MUTCD/map width and upright/map orientation across all phases.
 
-        Preserve the mapped face center and offset along the selected normal; no positional
+        Preserve the mapped face center and offset along the selected normal. No positional
         or yaw correction is applied to individual scenarios.
         """
         control = control_from_user_data(segment.user_data)

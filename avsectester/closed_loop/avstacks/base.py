@@ -124,11 +124,13 @@ class ObservationPipeline:
 
 
 class AVStack(_HookBindingMixin, ABC):
-    """The driving system: an Observation in, an optional Control out.
+    """Consume an Observation and optionally return a Control.
 
-    The interface knows nothing about the implementation: a modular perception->tracking->planning
-    ->control pipeline and a single end-to-end model both satisfy it. Implementations adapt their
-    own machinery (e.g. an avstack ``ModularDrivingPipeline``, or a camera end-to-end policy).
+    Wrap a complete driving system, such as a modular pipeline or a single end-to-end model.
+    Subclasses declare component stages through ``supported_stages``. Emit each declared
+    stage as ``self._emit(stage, value)`` and use the returned value. Pre stages take
+    ``CallInputs``, and post stages take the component output. The runner emits the core
+    observation and command stages.
     """
 
     provides_detections: bool | None = None
@@ -142,12 +144,6 @@ class AVStack(_HookBindingMixin, ABC):
     def required_history(cls, options: Mapping[str, Any]) -> HistoryRequirement:
         """Recorded input needed at the first decision, resolved before model loading."""
         return cls.history
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        if "past_steps" in cls.__dict__:
-            raise TypeError("AVStack.past_steps was replaced by history=HistoryRequirement. "
-                            "Declare a duration or acquisition count, not a decision count")
 
     @property
     def observation_pipeline(self) -> ObservationPipeline:

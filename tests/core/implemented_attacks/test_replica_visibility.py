@@ -1,4 +1,6 @@
 """ReplicaVisibility counts a decision when any selected camera sees the replica."""
+from dataclasses import replace
+
 import pytest
 
 from avsectester.evaluation import ComparisonGroup, UnavailableMetricValue
@@ -21,17 +23,18 @@ def test_camera_selection(segment):
     ])
     clean = RunLog(status="completed", steps=[StepRecord(0)])
     group = ComparisonGroup(segment, 0, {"patched": patched, "clean": clean})
-    # By default every recorded camera counts; a decision is visible when any camera meets the threshold.
     values = ReplicaVisibility().evaluate(group)
     assert values["patched"]["visible_steps"] == 2
     assert isinstance(values["clean"]["visible_steps"], UnavailableMetricValue)
     assert ReplicaVisibility(camera_ids=["front"]).evaluate(group)["patched"]["visible_steps"] == 1
     assert ReplicaVisibility(camera_ids=["side"]).evaluate(group)["patched"]["visible_steps"] == 0
-    patched.captures = [CaptureRecord(7, 99000, ("front",),
-        object_visibility=visibility(front=150))]
-    patched.steps[2].delivered_captures = {"front": (7,)}
-    patched.steps[2].physical_captures = {"front": 7}
-    patched.steps[3].physical_captures = {"front": 7}
-    assert ReplicaVisibility(camera_ids=["front"]).evaluate(group)["patched"]["visible_steps"] == 3
+    captures = [CaptureRecord(7, 99000, ("front",), object_visibility=visibility(front=150))]
+    later = [
+        replace(patched.steps[2], delivered_captures={"front": (7,)}, physical_captures={"front": 7}),
+        replace(patched.steps[3], physical_captures={"front": 7}),
+    ]
+    sampled = replace(patched, captures=captures, steps=patched.steps[:2] + later)
+    sampled_group = replace(group, runs={"patched": sampled})
+    assert ReplicaVisibility(camera_ids=["front"]).evaluate(sampled_group)["patched"]["visible_steps"] == 3
     with pytest.raises(ValueError, match="camera_ids"):
         ReplicaVisibility(camera_ids=[])

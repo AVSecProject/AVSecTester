@@ -45,7 +45,7 @@ def _archive_mounts(dataset: NuRecDataset) -> list[str]:
     archives = [Path(path).resolve() for path in dataset.usdz_paths]
     filenames = [path.name for path in archives]
     if len(set(filenames)) != len(filenames):
-        raise ValueError("NuRec archive filenames must be unique; duplicate served scene IDs are ambiguous")
+        raise ValueError("NuRec archive filenames must be unique because duplicate served scene IDs are ambiguous")
     mounts = []
     for path in archives:
         mounts.extend(["-v", f"{path}:/mnt/nre-data/{path.name}:ro"])
@@ -143,7 +143,7 @@ def local_services(
     """Reuse compatible services or own local NRE/CATK containers for one experiment.
 
     Only services started here are stopped, in reverse order, on normal exit or failure.
-    Cleanup errors become notes on the original exception; after success they are logged
+    Cleanup errors become notes on the original exception. After success they are logged
     without replacing the experiment's result.
     """
     require_positive_number(timeout_s, "timeout_s")

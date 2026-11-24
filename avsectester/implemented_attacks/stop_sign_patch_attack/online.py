@@ -14,7 +14,7 @@ REPLICA_OBJECT_ID = "stop_sign_replica"
 
 
 class StopSignPatchAttackRuntime(AttackRuntime):
-    """Insert one replica face; the simulator owns subsequent capture and cleanup."""
+    """Insert one replica face. The simulator owns subsequent capture and cleanup."""
 
     def __init__(self, asset: ObjectAsset, world_from_object: np.ndarray,
                  harmonizer: Harmonizer | None = None) -> None:

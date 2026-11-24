@@ -130,12 +130,15 @@ class EventRecord:
 class MessageRecord:
     """One message processed at a modifiable or observed ROS topic.
 
-    The arrival time is on the simulation clock. The source stamp is the message header time,
-    if available. Wall-clock times in nanoseconds mark when the relay received the message,
-    when the framework read it and began processing it, and, for modifiable topics, when the
-    relay published the result. Processing is in seconds. Stored unchanged messages use
-    ``original`` and leave ``forwarded`` empty. Both payloads are empty when only metadata is
-    recorded.
+    ``arrival_time_us`` uses the simulation clock. ``stamp_ns`` is the ROS header timestamp,
+    if available. Wall-clock timestamps in nanoseconds track relay reception
+    (``relay_received_ns``), framework reception (``framework_received_ns``), processing
+    start (``processing_started_ns``) and publication (``relay_sent_ns``). Observe-only
+    topics have no publication timestamp. ``processing_s`` measures processing in seconds.
+
+    ``modifiable`` marks forwarded topics, and ``modified`` marks changes to the message.
+    Payload capture stores ``original`` and includes ``forwarded`` when the message changes.
+    Metadata-only records leave both payloads empty.
     """
 
     topic: str

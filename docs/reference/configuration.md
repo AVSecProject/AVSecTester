@@ -25,12 +25,13 @@ Type paths and hook imports execute Python code. Use only trusted sources.
 |---|---|
 | `dataset.type` | `CarlaDataset`, `NuRecDataset`, `NuScenesDataset` |
 | `simulator.type` | `CarlaSimulator`, `NuRecSimulator`, `RecordedReplaySimulator` |
+| `simulator.options.external_driving_system.type` | `AutowareDrivingSystem` |
 | `avstack.type` | `ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack`, `RuleBasedAVStack`, `ExternalAVStack` |
 | `evaluation.metrics[].type` | `DrivingMetrics`, `DetectionMetrics`, `TrajectoryDeviation`, `StopImpact`, `StopLineMetrics`, `ReasoningPhraseRate` |
 | `attacks.<name>.type` | Discovered `Attack` subclasses in [class-name-derived directories](../../avsectester/implemented_attacks/README.md) |
 | `environment.sensors[].type` | `GaussianNoise`, `ShotNoise`, `Fog`, `Rain`, `Snow`, `Brightness`, `LowLight`, `Contrast`, `Gamma`, `ColorTemp`, `MotionBlur`, `DefocusBlur`, `JPEGCompression`, `ChromaticAberration`, `AlbumentationsCorruption` |
 
-Nested `type` mappings construct only dataset, simulator, driving-system and metric short names
+Nested `type` mappings construct the registered component short names
 from this table, or `module:name` paths. Attack names, corruption names and other values pass
 through as native data.
 
@@ -106,8 +107,22 @@ is separate. See [automatic local services](cli.md#automatic-local-services).
 
 `dataset` selects the scenario source. `NuRecDataset` accepts either `dataroot`, searched
 recursively for USDZ archives, or an explicit `usdz_paths` sequence. The two options are
-mutually exclusive. Dataset behavior and semantic maps are described
-in [Datasets](../guides/datasets.md).
+mutually exclusive. Dataset behavior and semantic maps are described in
+[Datasets](../guides/datasets.md).
+
+| Component | Option | Default or requirement |
+|---|---|---|
+| `NuRecDataset` | `time_step` | `0.1` seconds |
+| `NuRecDataset` | `camera_id` | `camera_front_wide_120fov` |
+| `NuRecDataset` | `vehicle_labels` | `[automobile, car, truck, bus, trailer, van, vehicle]` |
+| `NuScenesDataset` | `dataroot` | Required dataset root |
+| `NuScenesDataset` | `version` | `v1.0-trainval` |
+| `NuScenesDataset` | `camera` | `CAM_FRONT` |
+| `CarlaDataset` | `recipes` | Required mapping from names to `CarlaRecipe` |
+| `CarlaDataset` | `map_directory` | `null` |
+
+Each `CarlaRecipe` requires `scenario`, `decision_steps`, `time_step` and `motion`.
+Its `metadata` defaults to an empty mapping.
 
 ## Metadata
 
@@ -134,7 +149,8 @@ per-treatment overrides.
 The preparation records the source path and raw-byte SHA256. Compatibility depends only on that
 hash, so moving an unchanged file is allowed. Changing any bytes, including whitespace, changes
 its identity. Reusing preparation for execution checks the current file's hash and rechecks
-saved segment frames. Other checks follow [Input validation](../guides/experiments.md#input-validation).
+saved segment frames. Other checks follow
+[Input validation](../guides/experiments.md#input-validation).
 Reevaluation uses the saved hash and segments without reading this file. Adding or removing
 `metadata.load` relative to the saved configuration is incompatible.
 
@@ -203,7 +219,7 @@ ordering, and [Simulators](../guides/simulators.md) for capture behavior.
 | Simulator | Timing capabilities |
 |---|---|
 | NuRec | Independent frame intervals, camera exposure and pose reports. LiDAR accepts no exposure setting |
-| CARLA | Frame/report intervals, planner delay and force-GT duration must align with physical ticks. Exposure is zero |
+| CARLA | Frame/report intervals, planner delay and `force_gt` duration must align with physical ticks. Exposure is zero |
 | Recorded replay | Default timing on nominal keyframes only. An explicit decision period must equal the nominal interval |
 
 Unsupported settings fail during configuration. `force_gt_duration_us` must be a whole number
@@ -228,7 +244,9 @@ runs:
 ```
 
 This fragment keeps the decision grid at 100 ms and configures independent camera and LiDAR
-clocks. Camera phase from the recording is **Not yet implemented.** See
+clocks.
+
+**Not yet implemented.** Camera phase from the recording. See
 [Recorded camera phase](../development/TODO.md#recorded-camera-phase).
 
 ## Simulator
@@ -242,6 +260,9 @@ the dataset provides it. This injection does not recurse into nested constructor
 values are retained, but `ExperimentConfiguration` rejects a dataset/simulator mismatch.
 The loader also injects `decision_period_us` from that grid into the simulator's top-level
 constructor when it declares that parameter. Explicit options take precedence.
+
+### CARLA settings
+
 `client.rate` sets the native physics base tick, not the driving decision frequency. It must
 produce an integer number of microseconds per tick. The decision period must be an integer
 number of base ticks. `runs.timing.sensors` selects acquisition ticks.
@@ -253,6 +274,13 @@ set them.
 
 | Client option | Native default | Accepted values |
 |---|---|---|
+| `connect_ip` | required | Server host, typically `127.0.0.1` |
+| `connect_port` | required | RPC port, typically `2000` |
+| `traffic_manager_port` | required | Traffic Manager port, typically `8000` |
+| `rate` | `20.0` | Positive native ticks per second |
+| `synchronous` | `true` | Must be `true` |
+| `seed` | `null` | Nonnegative native CARLA seed. Preparation assigns one if omitted |
+| `traffic_manager_seed` | `seed` | Optional nonnegative Traffic Manager seed |
 | `substepping` | `true` | Boolean |
 | `max_substep_delta_time` | `0.01` | Positive finite seconds |
 | `max_substeps` | `10` | Positive integer |
@@ -261,9 +289,13 @@ CARLA initialization and external-control options are:
 
 | Option | Default | Accepted values or role |
 |---|---|---|
+| `simulator_version` | `"1.0"` | Participates in saved-preparation compatibility |
+| `settle_iters` | `100` | Nonnegative polling iteration budget for native sensor delivery |
+| `depth_camera` | `null` | RGB camera selected for aligned depth |
+| `occlusion_tolerance_m` | `0.1` | Nonnegative occlusion tolerance in meters |
 | `camera_warmup_s` | `4.0` | Nonnegative RGB-camera warmup duration |
 | `ground_settle_s` | `2.0` | Nonnegative duration for vehicles to settle before holding |
-| `external_startup_s` | `0.0` | Nonnegative fixed hold duration for an unmanaged external system |
+| `external_startup_s` | `0.0` | Nonnegative fixed hold duration for an external system without a lifecycle plugin |
 | `ego_control` | `"framework"` | `"framework"` or `"ros2"` |
 | `realtime_factor` | `null` | Positive simulation-time to wall-time ratio on the cumulative pacing schedule, required for `"ros2"` |
 | `external_driving_system` | `null` | Lifecycle plugin for `ego_control: ros2` |
@@ -301,9 +333,8 @@ ego:
 
 Set a camera's `post_process_profile` through its `blueprint_attributes` mapping. The framework
 does not choose a profile when the attribute is omitted.
-`simulator_version` defaults to `"1.0"` and participates in saved-preparation compatibility.
 
-#### Managed CARLA driving systems
+#### Hosted CARLA driving systems
 
 `scenario.ego_goal` supplies `x`, `y` and `yaw_deg` in the framework world frame. It uses meters
 and degrees. These values are already in Autoware map coordinates.
@@ -318,15 +349,15 @@ Configure `AutowareDrivingSystem` under `external_driving_system`:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `image` | Pinned Autoware 1.9.0 image | Local Docker image. See [Installation](../getting-started/installation.md#managed-autoware) |
+| `image` | Pinned Autoware 1.9.0 image | Local Docker image. See [Installation](../getting-started/installation.md#hosted-autoware) |
 | `gpu` | required | Host GPU index |
-| `ros_domain_id` | required | Domain used by the CARLA server |
+| `ros_domain_id` | required | Domain used by the CARLA server, an integer from 0 through 232 |
 | `autoware_data_directory` | required | Writable model directory on the Docker host |
 | `assets_directory` | required | Extracted official CARLA Autoware assets |
 | `dds_directory` | required | Directory containing `cyclonedds.xml` |
 | `work_directory` | required | Per-run logs and traffic signal files |
 | `launch_arguments` | `vehicle_model: sample_vehicle`, `sensor_model: awsim_sensor_kit`, `perception_mode: lidar` | Autoware launch arguments to override or extend |
-| `modified_topics` | `[]` | Absolute names from the [modifiable topic list](../guides/simulators.md#managed-ros-topics) |
+| `modified_topics` | `[]` | Absolute names from the [modifiable topic list](../guides/simulators.md#hosted-ros-topics) |
 | `observed_topics` | `[]` | Absolute names of topics to subscribe to for read-only processing |
 | `startup_timeout_s` | `300.0` | Positive readiness timeout in wall seconds |
 | `engage_timeout_s` | `10.0` | Positive autonomous-mode timeout in simulation seconds |
@@ -334,12 +365,14 @@ Configure `AutowareDrivingSystem` under `external_driving_system`:
 | `localization_tolerance_deg` | `5.0` | Maximum localization heading error in degrees |
 | `distortion_check_s` | `12.0` | Diagnostic check window in wall seconds |
 
+Launch argument names are identifiers and values are scalars. Booleans become lowercase strings.
 The plugin fixes `simulator_type`, `launch_simulator_interface`, `rviz` and `map_path`.
+You cannot supply an argument used to remap a selected topic.
 Preparation compatibility includes the image, launch arguments, configuration override version,
 check thresholds and timeouts. When topics are configured, it also includes both topic lists
 and the producer rewrite version. The lists must be disjoint and require paced execution.
 Each observed topic must resolve to a single message type at startup. See
-[managed ROS topics](../guides/simulators.md#managed-ros-topics).
+[hosted ROS topics](../guides/simulators.md#hosted-ros-topics).
 
 `modified_topics`, `observed_topics` and `recording.topics` require absolute ROS topic names.
 Each slash-separated component starts with an ASCII letter or underscore and contains only
@@ -366,8 +399,8 @@ from `NuRecDataset`. Reset requires `ScenarioStart`. Constructor defaults are:
 
 `nurec_patch.yaml`, `nurec_speed_feedback.yaml` and `nurec_object_insertion.yaml` use
 `ground_mesh: mesh` and the default mesh depth. The four stop-sign configurations use
-`ground_mesh: mesh_ground` and `depth: none`. All seven explicitly select map navigation and ego
-ground contact with `AlpaSimController`.
+`ground_mesh: mesh_ground` and `depth: none`. All eight supplied NuRec configurations select
+`route_generator: map`, `physics_update_mode: ego_only` and `AlpaSimController` explicitly.
 
 ```yaml
 simulator:
@@ -389,6 +422,15 @@ simulator:
 ```
 
 NuRec cameras render at their native resolution.
+
+| `NuRecRenderer` option | Default |
+|---|---|
+| `endpoint` | `127.0.0.1:50051` |
+| `scene_id` | `null` |
+| `cameras` | `[camera_front_wide_120fov]` |
+| `image_quality` | `95.0` |
+| `track_padding_m` | `[1.0, 1.0, 0.25]` |
+
 `NuRecRenderer.lidar` defaults to `null`. Set it to the scene's logical LiDAR sensor name to
 collect scans. See [NuRec LiDAR](../guides/simulators.md#lidar) for timing and sensor constraints.
 
@@ -399,7 +441,8 @@ client. Set this unchanged server-side string only when connecting to an externa
 whose asset mount has a different path. See
 [automatic local services](cli.md#automatic-local-services) for startup and mounts.
 
-For insertion behavior, see [Inserted world objects](../guides/simulators.md#inserted-world-objects).
+For insertion behavior, see
+[Inserted world objects](../guides/simulators.md#inserted-world-objects).
 
 ### Reactive traffic
 
@@ -512,7 +555,8 @@ See the [configuration list](../examples/README.md) for supplied attacks and
 ## Hooks
 
 `hooks` is a sequence of stage handlers shared by every treatment. Each mapping declares `stage`
-and exactly one of `type` or `native_hook`. A type-based hook accepts `options`. Optional
+and exactly one of `type` or `native_hook`. For hosted topics, `stage` is the original
+absolute ROS topic name. A type-based hook accepts `options`. Optional
 `imports` lists modules imported before constructing the handler.
 
 ```yaml
@@ -536,7 +580,8 @@ provides canonical detections. An explicit empty list selects no metrics. Repeat
 are rejected. `DetectionMetrics` is rejected during loading when the configured stack declares
 no detections.
 
-Custom metrics use `package.module:Class`. See [Experiment configuration](#experiment-configuration).
+Custom metrics use `package.module:Class`. See
+[Experiment configuration](#experiment-configuration).
 
 ```yaml
 evaluation:
@@ -564,10 +609,11 @@ Run controls belong under `runs`, represented in Python by frozen `RunsConfigura
 | `strict` | `false` | Stop on the first execution or selection error |
 | `timing` | default clocks | [Scheduling](#scheduling) rates and delays |
 
+Treatments can be a sequence of entries with `name`, or a mapping keyed by treatment name.
 Attack and treatment names must be nonempty, contain no path separators and differ from
 `.` and `..`. Treatment names must be unique and must not have the form `repeat-<n>`, which
-names [repeat directories](../guides/experiments.md#repeating-treatments). A treatment without `attack_name` has no enabled attack. Otherwise that field
-must reference a configured attack. Group membership is defined
+names [repeat directories](cli.md#output-layout). A treatment without `attack_name` has no
+enabled attack. Otherwise that field must reference a configured attack. Group membership is defined
 in [Evaluation](../guides/evaluation.md#comparison-groups).
 
 ### Environment
@@ -602,10 +648,10 @@ runs:
       - {type: GaussianNoise, options: {severity: 0.2}, camera: front}
 ```
 
-Custom corruptions use `package.module:Class`. See [Experiment configuration](#experiment-configuration).
-Severity is in [0, 1] and defaults to 0.5. `ColorTemp` also accepts
-`warm`, which defaults to `true`. `AlbumentationsCorruption` requires `transform`. The
-[Python API](python-api.md) lists the available corruption classes.
+Custom corruptions use `package.module:Class`. See
+[Experiment configuration](#experiment-configuration). Severity defaults to 0.5 and is clipped to
+[0, 1]. `ColorTemp` also accepts `warm`, which defaults to `true`. `AlbumentationsCorruption`
+requires `transform`. The [Python API](python-api.md) lists the available corruption classes.
 
 ### Recording
 
@@ -618,12 +664,12 @@ Python `RecordingPolicy` values are immutable and hashable.
 | `every_n_captures` | `1` | Save every Nth acquisition of each selected sensor |
 | `topics` | `[]` | Original names of modifiable or observed ROS topics whose payloads are saved |
 
-Empty `sensor_ids` retains no image payloads. State, commands, actions, outputs, available
+Empty `sensor_ids` retains no sensor payloads. State, commands, actions, outputs, available
 components and detections are recorded every decision. Reevaluation cannot recover omitted
 sensor payloads. With an output directory, recorded sensor payloads stay on disk. Logs in
 experiment results then have empty observation `sensor_data`, and `RunLog.read(path)` loads it.
 
-`topics` accepts names from `modified_topics` and `observed_topics` on the hosted driver.
+`topics` accepts names from `modified_topics` and `observed_topics` on the hosted driving system.
 Configured topics outside this list keep metadata only. See the
 [message record](runtime.md#runlog) for their saved fields.
 
@@ -637,9 +683,9 @@ runs:
 
 ## Constructor filesystem parameters
 
-Filesystem options follow constructor annotations for dataset, simulator, `AVStack`, attack,
-hook, metric and nested constructors. `Path` or `os.PathLike` annotations mark paths, including
-unions and sequence elements such as `str | Path` or `list[Path]`.
+Filesystem options follow constructor annotations for dataset, simulator, `AVStack`, attack, hook,
+metric, observation pipeline, binding, corruption and nested constructors. `Path` or `os.PathLike`
+annotations mark paths, including unions and sequence elements such as `str | Path` or `list[Path]`.
 
 Relative values become absolute strings resolved beside the YAML file that contains them. A
 leading `~` is expanded. Absolute paths preserve their location. URI strings containing `://`
@@ -660,19 +706,18 @@ A current metadata file must have the saved raw-byte hash, but its path may diff
 raises `ConfigurationMismatchError`. Saved preparations require an offline report for every
 completed attack, including attacks whose offline phase is a no-op.
 
-Additional `seeds`, `treatments`, `recording`, `output`, `strict`, decision limits, `split.execute`
-and evaluation settings may change. The first seed, partition and offline environments must match.
-`run --prepared` writes the loaded preparation record, units, deployment budget and metadata
-source unchanged into the new output. Driving-system options that change its history affect
-compatibility through that declaration. Other `AVStack` and hook settings are not compared.
-Preparations without timing/history declarations require default timing. Each saved segment
-is rechecked with `can_start_at` under the current driving history before execution or resume.
-`Attack` constructor options are compared as written,
-including an explicitly written default versus an omitted option. Lists and tuples with
-identical contents compare equally. Booleans, integers and floating-point numbers remain
-distinct, so `true`, `1` and `1.0` are incompatible.
-The current hooks' setup ticks plus the attack's deployment requirement must not exceed the
-saved deployment tick budget. Execution fails otherwise.
+Additional `seeds`, `treatments`, `repeats`, `recording`, `output`, `strict`, decision limits,
+`split.execute` and evaluation settings may change. The first seed, partition and offline
+environments must match. `run --prepared` writes the loaded preparation record, units, deployment
+budget and metadata source unchanged into the new output. Driving-system options that change its
+history affect compatibility through that declaration. Other `AVStack` and hook settings are not
+compared. Current preparations require matching timing and driving history declarations. Legacy
+preparations without these declarations require default timing and recheck saved starts with
+`can_start_at` under the current driving history. `Attack` constructor options are compared as
+written, including an explicitly written default versus an omitted option. Lists and tuples with
+identical contents compare equally. Booleans, integers and floating-point numbers remain distinct,
+so `true`, `1` and `1.0` are incompatible. The current hooks' setup ticks plus the attack's
+deployment requirement must not exceed the saved deployment tick budget. Execution fails otherwise.
 
 YAML declarations retain their constructor options. Direct Python attacks describe their inputs
 through `configuration_parameters()`. An undescribable value produces a warning and marks

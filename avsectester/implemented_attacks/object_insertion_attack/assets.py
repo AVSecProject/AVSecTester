@@ -104,7 +104,12 @@ def _disc(img: np.ndarray, cx: int, cy: int, r: int, color) -> None:
 
 
 def signal_head_rgba(lit: str = "red", texture_height_pixels: int = 300) -> np.ndarray:
-    """One vertical 3-lens signal head (red/yellow/green top-to-bottom) with ``lit`` lens on; RGBA."""
+    """Render a vertical RGBA signal head with ``lit`` selecting the illuminated lens.
+
+    Lenses are red, yellow and green from top to bottom. The background is transparent.
+    ``texture_height_pixels`` must be an integer of at least 24 pixels. An invalid height
+    or lens name raises ``ValueError``.
+    """
     if lit not in _LENS:
         raise ValueError(f"Unknown traffic-light state {lit!r}")
     if isinstance(texture_height_pixels, bool) or not isinstance(texture_height_pixels, int) or texture_height_pixels < 24:
@@ -126,10 +131,11 @@ def signal_head_rgba(lit: str = "red", texture_height_pixels: int = 300) -> np.n
 
 def traffic_lights_rgba(head_count: int = 3, lit: str = "red", texture_height_pixels: int = 300, gap_fraction: float = 0.25,
                         board: tuple | None = (35, 37, 40)) -> np.ndarray:
-    """``head_count`` signal heads in a row, all showing ``lit``, mounted on an optional ``board``; RGBA.
+    """An RGBA row of ``head_count`` signal heads showing ``lit``, on an optional ``board``.
 
-    ``head_count`` heads is the "multiple traffic lights" payload; ``gap_fraction`` is the spacing between heads as a
-    fraction of a head's width. ``board=None`` gives just the heads on a transparent background.
+    ``head_count`` is a positive integer. ``gap_fraction`` is finite and nonnegative and
+    gives the spacing as a fraction of a head's width. Set ``board`` to an RGB color for
+    a backing panel or to ``None`` for transparent space around the heads.
     """
     require_positive_integer(head_count, "head_count")
     if not math.isfinite(gap_fraction) or gap_fraction < 0:
@@ -162,7 +168,7 @@ def roadside_rig(face: np.ndarray | str | Path, width_m: float = 2.4, mount_heig
 class PersonAsset:
     """A cut-out standee or a printed person poster, with its origin at ground level.
 
-    Lengths are in meters: a standee uses ``height_m``; a billboard uses ``width_m`` and
+    Lengths are in meters: a standee uses ``height_m``. A billboard uses ``width_m`` and
     ``mount_height_m``."""
 
     image: np.ndarray | str | Path

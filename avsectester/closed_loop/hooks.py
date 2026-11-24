@@ -1,7 +1,8 @@
 """Ordered attack and defense callbacks with per-run lifecycle management.
 
-Stages describe execution points, not attack families. A stage handler replaces its input
-value. Simulator stages receive ``None`` and use explicit native simulator operations instead.
+Stages describe points in execution. Handlers can replace values on modifiable stages.
+Handlers for observe-only ROS topics must return their input object. Simulator stages receive
+``None`` and use explicit native simulator operations.
 """
 
 from __future__ import annotations
@@ -28,7 +29,11 @@ if TYPE_CHECKING:
 
 
 class StageEmitter(Protocol):
-    """The emitter a simulator runtime or driving system is bound to, normally the dispatcher."""
+    """Deliver a supported stage value to registered callbacks.
+
+    A simulator runtime or driving system typically receives a HookDispatcher binding for
+    the active run. It uses the returned value for downstream work.
+    """
 
     def emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
         """Run registered callbacks for a supported stage and return the resulting value."""
@@ -62,6 +67,7 @@ class _HookBindingMixin:
             self._dispatcher = None
 
     def _emit(self, stage: str, value: Any, sensor: str | None = None) -> Any:
+        """Emit a declared stage and return its transformed value or the unbound input."""
         dispatcher = getattr(self, "_dispatcher", None)
         return dispatcher.emit(stage, value, sensor=sensor) if dispatcher is not None else value
 
@@ -73,7 +79,7 @@ class UnsupportedStageError(ValueError):
 EXTERNAL_CONTROL_INPUT_ERROR = (
     "Native sensor data is published by the simulator directly to the external driving system. "
     "Framework observation and sensor changes do not reach the external driving system. See "
-    "docs/guides/simulators.md#managed-ros-topics"
+    "docs/guides/simulators.md#hosted-ros-topics"
 )
 
 
@@ -368,10 +374,9 @@ class HookDispatcher:
         ))
 
     def drain_outputs(self) -> list[RecordedOutput]:
-        """Transfer recorded outputs to a consumer without retaining the run's history.
+        """Return a list of outputs in recorded order and clear ``outputs`` in place.
 
-        Direct session callers keep the existing accumulating ``outputs`` view until they
-        explicitly drain it. Keep that list's identity for callers holding a reference.
+        Direct session callers can read ``outputs`` as it accumulates between drains.
         """
         result = list(self.outputs)
         self.outputs.clear()

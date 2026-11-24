@@ -41,9 +41,9 @@ def test_rule_based_planner(stop_before_sign_m):
     assert all(current.t - stopped_at < 2. + 1e-9 for current, _, _ in stopped)
     assert all(log["state"] == "CRUISE" for _, _, log in resumed)
     target = 50. - planner.stop_before_sign_m
-    assert stopped_position is not None and target - .5 <= stopped_position <= target + .2
+    assert target - .5 <= stopped_position <= target + .2
     assert stopped_at <= 2 * target / 13. + 1.
-    assert resumed_at is not None and resumed_at - stopped_at >= 2.
+    assert resumed_at - stopped_at >= 2.
     assert state.speed > 5. and state.x > 50.
     planner.reset(observation(PlanarEgoState(speed=13.)))
     planner.step(observation(PlanarEgoState(speed=13.)), [SignTrack(0, np.array([50., 0.]), np.eye(2))])

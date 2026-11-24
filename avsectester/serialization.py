@@ -210,14 +210,14 @@ class SerializationRegistry:
         if is_dataclass(value) and not isinstance(value, type):
             path = f"{type(value).__module__}:{type(value).__qualname__}"
             if path not in self._dataclasses:
-                raise TypeError(f"Unregistered dataclass type {path}; use register_dataclass")
+                raise TypeError(f"Unregistered dataclass type {path}. Use register_dataclass")
             return {_TAG: "dataclass", "type": path, "fields": {
                 item.name: field_encoder(item.name, getattr(value, item.name))
                 for item in fields(value) if item.init
             }}
         raise TypeError(
-            f"Unregistered type {type(value).__module__}:{type(value).__qualname__}; "
-            "use register_dataclass for dataclasses or register_native for native values"
+            f"Unregistered type {type(value).__module__}:{type(value).__qualname__}. "
+            "Use register_dataclass for dataclasses or register_native for native values"
         )
 
     def decode(self, data: Any, *, decode_child: Callable[[Any], Any] | None = None) -> Any:
@@ -233,7 +233,7 @@ class SerializationRegistry:
         if tag == "dataclass":
             path = data["type"]
             if not isinstance(path, str) or path not in self._dataclasses:
-                raise TypeError(f"Unregistered dataclass type {path!r}; use register_dataclass before decoding")
+                raise TypeError(f"Unregistered dataclass type {path!r}. Use register_dataclass before decoding")
             dataclass_type = self._dataclasses[path]
             if dataclass_type is None:
                 resolved = import_type_path(path)

@@ -259,7 +259,7 @@ class ExperimentConfiguration:
             except (TypeError, ValueError) as error:
                 warnings.warn(
                     f"Attack {name!r} parameters cannot be described: {error}. "
-                    "Saving only its type and environment; parameter compatibility is unverified. "
+                    "Saving only its type and environment. Parameter compatibility is unverified. "
                     "Override configuration_parameters() to enable validated loading.",
                     RuntimeWarning, stacklevel=2,
                 )
@@ -437,7 +437,7 @@ def _timing(value: Any) -> TimingConfiguration:
 
 def _require_attacks(attacks: Mapping[str, Any]) -> None:
     if not attacks:
-        raise ValueError("An experiment requires at least one attack; attack metadata selects its segments")
+        raise ValueError("An experiment requires at least one attack. Attack metadata selects its segments")
 
 
 def _validate_metadata_configuration(configuration: ExperimentConfiguration) -> None:

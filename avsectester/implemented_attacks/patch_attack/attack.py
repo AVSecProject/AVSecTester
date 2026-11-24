@@ -26,7 +26,7 @@ class PatchAttack(Attack):
     """Select the best visible hosts per time window, then deploy one patch artifact.
 
     ``candidate_hosts=None`` considers all non-ego actors. ``hosts_per_window`` keeps
-    the highest-scoring hosts independently in each window; ties retain candidate order.
+    the highest-scoring hosts independently in each window. Ties retain candidate order.
     ``max_windows`` limits the number of time windows, not the number of hosts.
     ``anchor`` and ``offset_m`` specify a box-local mounting point. A selected
     host is assigned only when constructing its actual ``AttachedPlacement``. CARLA native

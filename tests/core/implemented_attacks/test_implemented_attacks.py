@@ -13,44 +13,94 @@ from avsectester.attack import OfflineContext
 from avsectester.attack.insertion import PatchCompositor, PlaneAsset
 from avsectester.rendering.textures import CheckerboardTexture
 from avsectester.attack.insertion.placement import WorldPlacement
+from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunRequest
 from avsectester.execution.services import ClosedLoopServices
 from avsectester.experiment import load_configuration
 from avsectester.rendering import MeshAsset, MeshPart
 
 
+from tests.fakes import (
+    MemoryDataset, MemorySimulator, NuRecRpcBoundary, StopApproachDataset, stop_approach_map,
+)
+
+
+@pytest.fixture
+def memory_dataset():
+    return MemoryDataset()
+
+
+@pytest.fixture
+def two_decision_dataset():
+    return MemoryDataset(decision_steps=2)
+
+
+@pytest.fixture
+def stop_approach_dataset():
+    return StopApproachDataset(stop_approach_map())
+
+
+@pytest.fixture
+def memory_simulator():
+    return MemorySimulator()
+
+
+@pytest.fixture
+def nurec_scene_simulator(monkeypatch, tmp_path):
+    """NuRec scene insertion behind the RPC boundary, for attacks that insert mesh assets."""
+    NuRecRpcBoundary().install(monkeypatch)
+    return NuRecSimulator(
+        NuRecRenderer(cameras=["front"], asset_directory=tmp_path / "assets"),
+        object_insertion="scene", depth="none", route_generator="none",
+        physics_update_mode="none", min_track_duration_s=0, time_step=.1)
+
+
+@pytest.fixture
+def default_driving_options():
+    return {}
+
+
+@pytest.fixture
+def native_driving_options():
+    pytest.importorskip("avstack.config")
+    from avstack.datastructs import DataContainer
+    from avstack.geometry import GlobalOrigin3D
+
+    return {"perception_output": DataContainer(0, 0., [], "front", source_reference=GlobalOrigin3D)}
+
+
 ATTACKS = [
     pytest.param("PatchAttack", {
         "decision_steps": 2, "assets": CheckerboardTexture(size=8), "max_windows": 1,
         "compositor": PatchCompositor(),
-    }, {"hosts_per_window": 0}, "default_driving_options", "memory_dataset", "memory_simulator", True,
+    }, ({"hosts_per_window": 0}, "hosts_per_window"), "default_driving_options", "memory_dataset", "memory_simulator", True,
         id="patch"),
     pytest.param("ObjectInsertionAttack", {
         "decision_steps": 2, "max_segments": 1,
         "assets": PlaneAsset(np.full((8, 8, 4), [240, 20, 20, 255], np.uint8), 1., 1.),
         "placement": WorldPlacement((7., 0., 1.)), "compositor": PatchCompositor(),
-    }, {"min_visible_fraction": 2.}, "default_driving_options", "memory_dataset",
+    }, ({"min_visible_fraction": 2.}, "min_visible_fraction"), "default_driving_options", "memory_dataset",
         "memory_simulator", True, id="object-insertion"),
     pytest.param("PhantomInjectionAttack", {"decision_steps": 2, "max_segments": 1},
-                 {"score": 2.}, "native_driving_options", "memory_dataset", "memory_simulator", True,
+                 ({"score": 2.}, "score in"), "native_driving_options", "memory_dataset", "memory_simulator", True,
                  id="phantom-injection"),
     pytest.param("SpeedFeedbackAttack", {
         "decision_steps": 2, "target_speed": 4., "initial_bias": .5, "max_segments": 1,
-    }, {"max_bias": -1.}, "default_driving_options", "memory_dataset", "memory_simulator", True,
+    }, ({"max_bias": -1.}, "Speed-feedback parameters"), "default_driving_options", "memory_dataset", "memory_simulator", True,
         id="speed-feedback"),
     pytest.param("StopSignPatchAttack", {"approach_m": 3., "min_approach_m": 0., "hold_steps": 1},
-                 {"initial_patch": "red"}, "default_driving_options",
+                 ({"initial_patch": "red"}, "initial_patch"), "default_driving_options",
                  "stop_approach_dataset", "memory_simulator", True, id="stop-sign-patch"),
     pytest.param("VehicleInsertionAttack", {
         "asset": MeshAsset((MeshPart(
             np.array([[0., -1., 0.], [0., 1., 0.], [0., 0., 2.]]), np.array([[0, 1, 2]]),
             color=np.array([240, 20, 20, 255], np.uint8)),), (0., 2., 2.), "vehicle"),
         "distance_m": 3., "time_ahead_s": .25, "decision_steps": 2, "max_segments": 1,
-    }, {"time_ahead_s": -1.}, "default_driving_options", "nurec_longitudinal_dataset",
+    }, ({"time_ahead_s": -1.}, "time_ahead_s"), "default_driving_options", "nurec_longitudinal_dataset",
         "nurec_scene_simulator", True, id="vehicle-insertion"),
     pytest.param("ActorRelocationAttack", {
         "actor_id": "lead", "x": 8., "y": -1., "z": 0., "yaw_deg": 15., "decision": 1,
-    }, {"decision": -1}, "default_driving_options", "two_decision_dataset", "memory_simulator",
+    }, ({"decision": -1}, "decision"), "default_driving_options", "two_decision_dataset", "memory_simulator",
         False, id="actor-relocation"),
 ]
 
@@ -105,6 +155,7 @@ def test_implemented_attack(attack_type, options, invalid, driving_options_fixtu
         assert loaded.model_observation.ego_speed == original.model_observation.ego_speed
         assert loaded.executed_command == original.executed_command
         np.testing.assert_equal(loaded.actions, original.actions)
-    configuration["attacks"]["attack"]["options"] = {**options, **invalid}
-    with pytest.raises((ValueError, TypeError)):
+    invalid_options, error = invalid
+    configuration["attacks"]["attack"]["options"] = {**options, **invalid_options}
+    with pytest.raises((ValueError, TypeError), match=error):
         load_configuration(configuration)

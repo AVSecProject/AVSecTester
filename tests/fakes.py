@@ -6,12 +6,15 @@ doubles below replace only software and hardware outside this repository.
 """
 from __future__ import annotations
 
-from copy import copy, deepcopy
+from copy import deepcopy
 from collections import deque
+from threading import Thread
+from time import monotonic, sleep, time_ns
 from types import ModuleType, SimpleNamespace
 import sys
 from dataclasses import replace
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -20,40 +23,27 @@ from avsectester.attack import Attack
 from avsectester.attack.runtime import AttackRuntime
 from avsectester.closed_loop.avstacks.base import AVStack
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+from avsectester.closed_loop.simulators.messages import MessageChannel
 from avsectester.closed_loop.timing import HistoryRequirement, TimingCapabilities
-from avsectester.data_types import (ActorState, Control, DeliveredAcquisition, Detection,
-                                    Observation, TimedStateEstimate, WorldSnapshot)
+from avsectester.data_types import ActorState, Control, Detection, Observation, WorldSnapshot
 from avsectester.closed_loop.simulators.base import SensorGeometry, SensorView, Simulator, SimulatorRuntime
 from avsectester.closed_loop.simulators.nurec.renderer import Renderer
 from avsectester.datasets import Dataset, FrameData, FrameReference, ScenarioDescriptor, ScenarioStart
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL, PinholeCamera
 from avsectester.geometry.poses import interpolate_transform
 from avsectester.maps import Lane, ScenarioMap, StopLine, TrafficControl
-from avsectester.serialization import DEFAULT_REGISTRY
 
 
 CAMERA = PinholeCamera(np.array([[50., 0., 50.], [0., 50., 40.], [0., 0., 1.]]), 100, 80)
 CAM_FROM_WORLD = np.linalg.inv(BODY_FROM_OPTICAL)
 
 
-def actor_state(position=(10., 0., 1.), speed=0.):
+def actor_state(position=(10., 0., 1.), speed=0., *, yaw=0., extent=(4., 2., 2.), category="vehicle"):
     pose = np.eye(4)
+    cosine, sine = math.cos(yaw), math.sin(yaw)
+    pose[:2, :2] = [[cosine, -sine], [sine, cosine]]
     pose[:3, 3] = position
-    return ActorState(pose, (speed, 0., 0.), "vehicle", (4., 2., 2.))
-
-
-class ResetRecordingDynamics:
-    """A user dynamics implementation that exposes its recorded initial state."""
-
-    command_modes = frozenset({"actuator"})
-
-    def reset(self, state):
-        self.initial_state = deepcopy(state)
-
-    def step(self, state, command, dt):
-        from avsectester.closed_loop.simulators.ego_dynamics import KinematicBicycle
-
-        return KinematicBicycle().step(state, command, dt)
+    return ActorState(pose, (speed, 0., 0.), category, extent)
 
 
 class MemoryDataset(Dataset):
@@ -77,7 +67,7 @@ class MemoryDataset(Dataset):
             raise KeyboardInterrupt()
         if self.scenarios_error is not None:
             raise RuntimeError(self.scenarios_error)
-        return iter(ScenarioDescriptor(name, "memory") for name in self.scenario_ids)
+        return iter(ScenarioDescriptor(name, MemoryDataset.__name__) for name in self.scenario_ids)
 
     def frames(self, scenario_id):
         if scenario_id not in self.scenario_ids:
@@ -93,7 +83,7 @@ class MemoryDataset(Dataset):
     def scenario_start(self, scenario_id, frame):
         frame = self.checked_frame(scenario_id, frame)
         return ScenarioStart(
-            "memory", scenario_id, frame, {"time_step": self.time_step},
+            MemoryDataset.__name__, scenario_id, frame, {"time_step": self.time_step},
             recorded_ego=tuple(self.frame_data(scenario_id, item).ego
                                for item in self.frames(scenario_id)),
             scenario_map=self.scenario_map(scenario_id),
@@ -139,10 +129,37 @@ def stop_approach_map(*, line_kind="stop_sign", facing=True, line_offset_y=0.,
                        stop_lines={"line": line})
 
 
+class MemoryImageRenderer(Renderer):
+    """An in-memory renderer with a chosen optical lens model."""
+
+    cameras = ["front"]
+
+    def __init__(self, camera, camera_id="front", rig_from_camera=None, provide_geometry=True):
+        self.camera = camera
+        self.cameras = [camera_id]
+        self.rig_from_camera = rig_from_camera
+        self.provide_geometry = provide_geometry
+
+    def camera_model(self, camera=None):
+        if camera is not None and camera not in self.cameras:
+            raise ValueError(f"Unknown camera {camera!r}")
+        return self.camera if self.provide_geometry else None
+
+    def cam_from_world(self, world_from_rig, camera=None):
+        rig_from_camera = BODY_FROM_OPTICAL.copy()
+        rig_from_camera[2, 3] = 1.5
+        if self.rig_from_camera is not None:
+            rig_from_camera = self.rig_from_camera
+        return np.linalg.inv(world_from_rig @ rig_from_camera)
+
+    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=(), **exposure):
+        return np.full((self.camera.height, self.camera.width, 3), 30, np.uint8)
+
+
 class MemorySimulator(Simulator):
     """An image-producing actuator world, with explicit optional external failures."""
 
-    dataset_kinds = ("memory",)
+    dataset_kinds = (MemoryDataset.__name__,)
     can_render = True
     can_replay = True
     can_observe_past = True
@@ -153,7 +170,7 @@ class MemorySimulator(Simulator):
     def __init__(self, time_step=.1, capture_ticks=0, world_key=None,
                  extra_sensors=None, camera_geometries=None, sensor_depths=None, actors=None, runtime_error=None, start_error=None,
                  can_replay=True, can_observe_past=True, can_insert_objects=True, can_render=True,
-                 observation_lead_steps=0, captures_between_decisions=True):
+                 observation_lead_steps=0, captures_between_decisions=True, can_repeat_runs=False):
         self.time_step, self.capture_ticks = time_step, capture_ticks
         self.captures_between_decisions = captures_between_decisions
         self._observation_lead_steps = observation_lead_steps
@@ -164,6 +181,7 @@ class MemorySimulator(Simulator):
         self.can_replay = can_replay
         self.can_observe_past = can_observe_past
         self.can_insert_objects = can_insert_objects
+        self.can_repeat_runs = can_repeat_runs
         self.extra_sensors = deepcopy(extra_sensors or {})
         self.camera_geometries = deepcopy(camera_geometries if camera_geometries is not None else {
             "front": SensorGeometry("front", CAMERA, CAM_FROM_WORLD),
@@ -198,12 +216,6 @@ class MemorySimulator(Simulator):
         if self.runtime_error is not None:
             raise RuntimeError(self.runtime_error)
         return MemorySimulatorRuntime(self, seed)
-
-
-class RepeatedRunMemorySimulator(MemorySimulator):
-    """The memory simulator with repeat support enabled for experiment tests."""
-
-    can_repeat_runs = True
 
 
 class MemorySimulatorRuntime(SimulatorRuntime):
@@ -246,14 +258,16 @@ class MemorySimulatorRuntime(SimulatorRuntime):
     def _observe(self):
         return self._observe_sensors(tuple(self.sensors))
 
-    def _observe_sensors(self, sensor_ids):
-        selected = set(sensor_ids)
-        color = 20 + self.position
+    def _sensor_data(self, selected, frame_position):
+        color = 20 + int(frame_position)
         images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3), color, np.uint8)
                   for sensor, geometry in self.simulator.camera_geometries.items() if sensor in selected}
-        return Observation(self.state().t, self.position,
-                           {**images, **{key: deepcopy(value) for key, value in self.simulator.extra_sensors.items()
-                                        if key in selected}}, ego_speed=self.speed)
+        return {**images, **{key: deepcopy(value) for key, value in self.simulator.extra_sensors.items()
+                            if key in selected}}
+
+    def _observe_sensors(self, sensor_ids):
+        return Observation(self.state().t, self.position, self._sensor_data(set(sensor_ids), self.position),
+                           ego_speed=self.speed)
 
     def _recorded_ego(self, position):
         left = int(position)
@@ -287,23 +301,12 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         position = self._recorded_position(time_us)
         state = self._recorded_pose_state(time_us)
         selected = self.sensors if sensors is None else set(sensors)
-        images = {sensor: np.full((geometry.camera.height, geometry.camera.width, 3),
-                                  20 + int(position), np.uint8)
-                  for sensor, geometry in self.simulator.camera_geometries.items() if sensor in selected}
-        return Observation(
-            state.t, state.frame,
-            {**images, **{key: deepcopy(value) for key, value in self.simulator.extra_sensors.items()
-                         if key in selected}},
-            vehicle_state=state.vehicle_state, ego_speed=state.ego_speed,
-        )
+        return Observation(state.t, state.frame, self._sensor_data(selected, position),
+                           vehicle_state=state.vehicle_state, ego_speed=state.ego_speed)
 
     def _recorded_sensor_geometry(self, time_us, sensor):
-        if sensor not in self.camera_sensors:
-            raise ValueError(f"Unknown memory camera: {sensor}")
-        geometry = self.simulator.camera_geometries[sensor]
-        transform = geometry.cam_from_world.copy()
-        transform[:, 3] -= transform[:, 0] * self._recorded_ego(self._recorded_position(time_us)).pose[0, 3]
-        return SensorGeometry(sensor, geometry.camera, transform)
+        distance = self._recorded_ego(self._recorded_position(time_us)).pose[0, 3]
+        return self._camera_geometry(sensor, distance)
 
     def _recorded_sensor_view(self, time_us, sensor, observation):
         geometry = self._recorded_sensor_geometry(time_us, sensor)
@@ -372,11 +375,14 @@ class MemorySimulatorRuntime(SimulatorRuntime):
         return frozenset(self.simulator.camera_geometries)
 
     def _sensor_geometry(self, sensor):
+        return self._camera_geometry(sensor, self.distance)
+
+    def _camera_geometry(self, sensor, distance):
         if sensor not in self.camera_sensors:
             raise ValueError(f"Unknown memory camera: {sensor}")
         geometry = self.simulator.camera_geometries[sensor]
         transform = geometry.cam_from_world.copy()
-        transform[:, 3] -= transform[:, 0] * self.distance
+        transform[:, 3] -= transform[:, 0] * distance
         return SensorGeometry(sensor, geometry.camera, transform)
 
     def _capture_view_builder(self, sensor, observation, state):
@@ -439,6 +445,155 @@ class ExternallyControlledMemoryRuntime(MemorySimulatorRuntime):
 
     def decision_telemetry(self):
         return {"ego_control": {"throttle": .2, "brake": 0., "steer": 0.}}
+
+
+class MemoryMessageChannel(MessageChannel):
+    """An in-process message transport controlled by the simulated peer."""
+
+    def __init__(self, reports=(), on_finish=None):
+        self.controls = []
+        self.reports = reports or ({"topics": {}, "tf": {}},)
+        self.on_finish = on_finish
+        self.handler = None
+
+    @property
+    def relay_count(self):
+        return len(self.reports)
+
+    def start(self, handler):
+        self.handler = handler
+
+    def deliver(self, frame, *, relay_index=0):
+        return self.handler({**frame, "relay_index": relay_index, "read_ns": time_ns()})
+
+    def send(self, frame):
+        self.controls.append(frame["kind"])
+        if frame["kind"] == "finish":
+            if self.on_finish is not None:
+                self.on_finish(self)
+            for index, report in enumerate(self.reports):
+                self.deliver({"kind": "statistics", **report}, relay_index=index)
+
+    def check(self):
+        pass
+
+
+class MemoryMessageSimulator(ExternallyControlledMemorySimulator):
+    """A closed-loop memory simulator with native message stages."""
+
+    def __init__(self, stages, *, channel=None, tick_callback=None):
+        super().__init__()
+        self._stages = stages
+        self.channel = channel
+        self.tick_callback = tick_callback
+
+    @property
+    def message_stages(self):
+        return self._stages
+
+    @property
+    def supported_stages(self):
+        return super().supported_stages | self._stages.keys()
+
+    def create_runtime(self, seed=None):
+        return MemoryMessageRuntime(self, seed)
+
+
+class MemoryMessageRuntime(ExternallyControlledMemoryRuntime):
+    @property
+    def message_channel(self):
+        return self.simulator.channel
+
+    @property
+    def message_snapshot(self):
+        return self.clock.time_us, self.state()
+
+    @property
+    def message_sensor_poses(self):
+        return {stage.sensor: np.eye(4) for stage in self.message_stages.values() if stage.sensor}
+
+    def _advance_native(self, control):
+        if self.simulator.tick_callback is not None:
+            self.simulator.tick_callback()
+        super()._advance_native(control)
+
+
+class MemoryDrivingSystem:
+    """A hosted driver with simulated readiness and a detached lifecycle report."""
+
+    def __init__(self, ready_at_s=.7, *, startup_error=None, run_error=None):
+        self.ready_at_s = ready_at_s
+        self.startup_error = startup_error
+        self.run_error = run_error
+        self.sessions = []
+
+    @property
+    def identity(self):
+        return {"ready_at_s": self.ready_at_s}
+
+    @property
+    def carla_publishes_tf(self):
+        return False
+
+    def start(self, context):
+        session = MemoryDrivingSession(context, self.ready_at_s, self.startup_error,
+                                             self.run_error)
+        self.sessions.append(session)
+        return session
+
+
+class MemoryDrivingSession:
+    def __init__(self, context, ready_at_s, startup_error, run_error):
+        self.context = context
+        self.ready_at_s = ready_at_s
+        self.startup_error = startup_error
+        self.run_error = run_error
+        self.ready_s = self.engaged_s = None
+        self.sim_time = None
+        self.pose = None
+        self.advanced = self.stopped = False
+
+    def poll(self, ego_pose, sim_time):
+        self.pose = ego_pose.copy()
+        self.sim_time = sim_time
+        if self.sim_time < self.ready_at_s:
+            return False
+        if self.startup_error:
+            raise TimeoutError(self.startup_error)
+        if self.ready_s is None:
+            self.ready_s = sim_time
+        return True
+
+    def engage(self):
+        self.engaged_s = self.sim_time
+
+    def check(self):
+        if self.run_error:
+            raise RuntimeError(self.run_error)
+        self.advanced = True
+
+    def telemetry(self):
+        return {"mode": "AUTONOMOUS" if self.advanced else "STOP"}
+
+    def report(self):
+        return {"ready_s": self.ready_s, "engaged_s": self.engaged_s, "stopped": self.stopped}
+
+    def stop(self):
+        self.stopped = True
+
+class FrameDriver(AVStack):
+    """Emit perception only for steps that deliver a front camera frame."""
+
+    command_modes = frozenset({"actuator"})
+    supported_stages = frozenset({"perception.post"})
+
+    def reset(self, observation):
+        pass
+
+    def __call__(self, observation):
+        if "front" in observation.sensor_data:
+            self._emit("perception.post", [])
+        return Control(throttle=.2)
 
 
 class ConstantAVStack(AVStack):
@@ -643,6 +798,15 @@ def container_running(state_path):
     return state.get("running", False) if isinstance(state, dict) else state is True
 
 
+def decode_gaussian_ply(data):
+    """Read the binary float rows of a NuRec Gaussian PLY."""
+    _, body = data.split(b"end_header\n", 1)
+    return np.frombuffer(body, "<f4").reshape(-1, 14)
+
+
+TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
+
+
 class NuRecRpcBoundary:
     """A SensorsimService boundary with a real NuRecRenderer.
 
@@ -662,7 +826,6 @@ class NuRecRpcBoundary:
     so duplicate insertion changes the image.
     """
 
-    TRACK_FROM_PLY = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
     TRACK_PADDING_M = np.array([1., 1., .25])
 
     def __init__(self, returned_resolution_hw=None, *, service_container=None):
@@ -801,13 +964,12 @@ class NuRecRpcBoundary:
                 (pose.timestamp_us, proto_world_pose(pose.pose)) for pose in track.trajectory.poses)
             directory, name = track.asset_id.rsplit("/", 1)
             data = (Path(self.asset_directories.get(directory, directory)) / name).read_bytes()
-            header, body = data.split(b"end_header\n", 1)
-            rows = np.frombuffer(body, "<f4").reshape(-1, 14)
+            rows = decode_gaussian_ply(data)
             size = np.array([track.object_size.size_x, track.object_size.size_y, track.object_size.size_z])
             scale = (size - self.TRACK_PADDING_M).max()
             colours = np.clip((rows[:, 3:6] * .28209479177387814 + .5) * 255, 0, 255).round().astype(np.uint8)
             self.tracks.setdefault(track.id, []).append(
-                (rows[:, :3] @ self.TRACK_FROM_PLY.T * scale, colours))
+                (rows[:, :3] @ TRACK_FROM_PLY.T * scale, colours))
             self.insertion_counts[track.id] = self.insertion_counts.get(track.id, 0) + 1
         return SimpleNamespace(success=True, message="Success")
 
@@ -873,54 +1035,6 @@ class NuRecRpcBoundary:
             vars(module).update(values)
             monkeypatch.setitem(sys.modules, name, module)
         return self
-
-
-class NuRecImageBoundary(Renderer):
-    """A deterministic image service boundary with a chosen optical lens model."""
-
-    cameras = ["front"]
-
-    def __init__(self, camera, camera_id="front", rig_from_camera=None, provide_geometry=True):
-        self.camera = camera
-        self.cameras = [camera_id]
-        self.rig_from_camera = rig_from_camera
-        self.provide_geometry = provide_geometry
-
-    def camera_model(self, camera=None):
-        if camera is not None and camera not in self.cameras:
-            raise ValueError(f"Unknown camera {camera!r}")
-        return self.camera if self.provide_geometry else None
-
-    def cam_from_world(self, world_from_rig, camera=None):
-        rig_from_camera = BODY_FROM_OPTICAL.copy()
-        rig_from_camera[2, 3] = 1.5
-        if self.rig_from_camera is not None:
-            rig_from_camera = self.rig_from_camera
-        return np.linalg.inv(world_from_rig @ rig_from_camera)
-
-    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=(), **exposure):
-        return np.full((self.camera.height, self.camera.width, 3), 30, np.uint8)
-
-
-class NuRecTrafficImageBoundary(NuRecImageBoundary):
-    """Record native image/probe requests while using a deterministic image service."""
-
-    def __init__(self, camera):
-        super().__init__(camera)
-        self.rendered = []
-        self.probes = []
-        self.fail_render = False
-
-    def render(self, world_from_rig, timestamp_us, camera, dynamic_objects=(), **exposure):
-        if self.fail_render:
-            raise RuntimeError("image service failed")
-        self.rendered.append((timestamp_us, {key: pose.copy() for key, pose in dynamic_objects}))
-        return super().render(world_from_rig, timestamp_us, camera, dynamic_objects)
-
-    def render_scene_visibility(self, world_from_rig, timestamp_us, camera, objects,
-                                dynamic_objects=(), *, occlusion_tolerance_m=0., **exposure):
-        self.probes.append((timestamp_us, {key: pose.copy() for key, pose in dynamic_objects}))
-        return np.ones((self.camera.height, self.camera.width), dtype=bool)
 
 
 class CarlaVector:
@@ -1066,70 +1180,6 @@ class CarlaTrafficLight(CarlaActor):
         return self.elapsed_s
 
 
-class FakeExternalDrivingSystem:
-    """A hosted driver with simulated readiness and a detached lifecycle report."""
-
-    def __init__(self, ready_at_s=.7, *, startup_error=None, run_error=None):
-        self.ready_at_s = ready_at_s
-        self.startup_error = startup_error
-        self.run_error = run_error
-        self.sessions = []
-
-    @property
-    def identity(self):
-        return {"ready_at_s": self.ready_at_s}
-
-    @property
-    def carla_publishes_tf(self):
-        return False
-
-    def start(self, context):
-        session = FakeExternalDrivingSession(context, self.ready_at_s, self.startup_error,
-                                             self.run_error)
-        self.sessions.append(session)
-        return session
-
-
-class FakeExternalDrivingSession:
-    def __init__(self, context, ready_at_s, startup_error, run_error):
-        self.context = context
-        self.ready_at_s = ready_at_s
-        self.startup_error = startup_error
-        self.run_error = run_error
-        self.ready_s = self.engaged_s = None
-        self.sim_time = None
-        self.pose = None
-        self.advanced = self.stopped = False
-
-    def poll(self, ego_pose, sim_time):
-        self.pose = ego_pose.copy()
-        self.sim_time = sim_time
-        if self.sim_time < self.ready_at_s:
-            return False
-        if self.startup_error:
-            raise TimeoutError(self.startup_error)
-        if self.ready_s is None:
-            self.ready_s = sim_time
-        return True
-
-    def engage(self):
-        self.engaged_s = self.sim_time
-
-    def check(self):
-        if self.run_error:
-            raise RuntimeError(self.run_error)
-        self.advanced = True
-
-    def telemetry(self):
-        return {"mode": "AUTONOMOUS" if self.advanced else "STOP"}
-
-    def report(self):
-        return {"ready_s": self.ready_s, "engaged_s": self.engaged_s, "stopped": self.stopped}
-
-    def stop(self):
-        self.stopped = True
-
-
 class CarlaSensorManager:
     def __init__(self):
         self.data = {"front": deque()}
@@ -1165,6 +1215,18 @@ class CarlaImageData(SimpleNamespace):
         return self.data
 
 
+CARLA_CAMERA_WIDTH, CARLA_CAMERA_HEIGHT = 16, 12
+CARLA_CAMERA_ATTRIBUTES = {
+    "image_size_x": str(CARLA_CAMERA_WIDTH), "image_size_y": str(CARLA_CAMERA_HEIGHT),
+    "fov": "90", "lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0",
+}
+CARLA_CAMERA_PROJECTION = np.array([
+    [CARLA_CAMERA_WIDTH / 2, 0., CARLA_CAMERA_WIDTH / 2, 0.],
+    [0., CARLA_CAMERA_WIDTH / 2, CARLA_CAMERA_HEIGHT / 2, 0.],
+    [0., 0., 1., 0.],
+])
+
+
 class CarlaMobileActor:
     def __init__(self, client, specification=None, include_rgb=True, **options):
         specification = options if specification is None else specification
@@ -1185,12 +1247,10 @@ class CarlaMobileActor:
         self.sensor_data_manager = CarlaSensorManager()
         native_camera = SimpleNamespace(type_id="sensor.camera.rgb",
             get_transform=self.actor.get_transform,
-            attributes={"image_size_x": "16", "image_size_y": "12", "fov": "90",
-                        "lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"})
+            attributes=dict(CARLA_CAMERA_ATTRIBUTES))
         self.sensors = {"front_camera": SimpleNamespace(source_identifier="front", frame0=0, t0=0.,
             object=native_camera, reference=SimpleNamespace(as_carla_transform=lambda local=True: CarlaTransform()),
-            imsize=(12, 16), P=np.array([[8., 0., 8., 0.],
-             [0., 8., 6., 0.], [0., 0., 1., 0.]]))}
+            imsize=(CARLA_CAMERA_HEIGHT, CARLA_CAMERA_WIDTH), P=CARLA_CAMERA_PROJECTION.copy())}
         if not include_rgb:
             self.sensors.clear()
             self.sensor_data_manager.data.clear()
@@ -1237,7 +1297,7 @@ class CarlaMobileActor:
             sensor = self.sensors["front_camera"]
             payload = CarlaImageData(frame=frame - sensor.frame0 + frame_offset,
                 timestamp=timestamp - sensor.t0,
-                data=np.full((12, 16, 3), color, np.uint8),
+                data=np.full((CARLA_CAMERA_HEIGHT, CARLA_CAMERA_WIDTH, 3), color, np.uint8),
                 calibration=SimpleNamespace(reference=SimpleNamespace(reference=self.reference)))
             self.sensor_data_manager.data["front"].append(payload)
         if "top_lidar" in self.sensors:
@@ -1257,13 +1317,12 @@ class CarlaNativeSensor:
         self.source_identifier = "lidar" if "lidar" in name.lower() else "front"
         kind = "sensor.lidar.ray_cast" if self.source_identifier == "lidar" else "sensor.camera.rgb"
         self.bp = client.world.get_blueprint_library().find(kind)
-        for key, value in {"image_size_x": "16", "image_size_y": "12", "fov": "90",
-                           "lens_k": "0", "lens_kcube": "0", "lens_circle_multiplier": "0"}.items():
+        for key, value in CARLA_CAMERA_ATTRIBUTES.items():
             self.bp.set_attribute(key, value)
         self.reference = SimpleNamespace(as_carla_transform=lambda local=True: CarlaTransform())
         self.frame0, self.t0 = 0, 0.
-        self.imsize = (12, 16)
-        self.P = np.array([[8., 0., 8., 0.], [0., 8., 6., 0.], [0., 0., 1., 0.]])
+        self.imsize = (CARLA_CAMERA_HEIGHT, CARLA_CAMERA_WIDTH)
+        self.P = CARLA_CAMERA_PROJECTION.copy()
         if do_spawn:
             self.spawn()
 
@@ -1374,8 +1433,8 @@ class CarlaWorld:
             actor.capture(self.frame, self.time, self.frame_offset)
         for actor in self.actors:
             if actor.type_id == "sensor.camera.depth" and actor.capture_callback is not None:
-                width = int(actor.attributes.get("image_size_x", 16))
-                height = int(actor.attributes.get("image_size_y", 12))
+                width = int(actor.attributes.get("image_size_x", CARLA_CAMERA_WIDTH))
+                height = int(actor.attributes.get("image_size_y", CARLA_CAMERA_HEIGHT))
                 encoded = round(10. / 1000. * (256 ** 3 - 1))
                 bgra = np.empty((height, width, 4), np.uint8)
                 bgra[:] = [(encoded >> 16) & 255, (encoded >> 8) & 255, encoded & 255, 255]
@@ -1484,6 +1543,83 @@ class CarlaTexture:
         self.pixels[y, x] = color
 
 
+def wait_until(predicate, *, timeout=3.):
+    """Poll an external boundary with a finite deadline."""
+    deadline = monotonic() + timeout
+    while not predicate():
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("The test boundary did not reach the expected state")
+        sleep(min(.01, remaining))
+
+
+class ControllableClock:
+    """A wall clock whose sleeping and work both advance simulated wall time."""
+
+    def __init__(self):
+        self.now = 0.
+        self.waits = []
+
+    def install(self, monkeypatch, component):
+        monkeypatch.setattr(sys.modules[component.__module__], "time", self)
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, duration):
+        self.waits.append(duration)
+        self.advance(duration)
+
+    def advance(self, duration):
+        self.now += duration
+
+
+class RelayMemoryDrivingSystem(MemoryDrivingSystem):
+    """A memory driving system publishing through a real relay connection."""
+
+    def __init__(self, socket_path, interception):
+        super().__init__()
+        self.socket_path = socket_path
+        self.interception = interception
+
+    def start(self, context):
+        from avsectester.closed_loop.ros_interception.channel import RelayChannel, RelayConnection
+
+        session = super().start(context)
+        channel = RelayChannel(self.socket_path)
+        peer = RelayConnection(channel.path)
+        session.interception_channel = channel
+        self.peer = peer
+        self.replies = []
+        peer.send({"kind": "ready"})
+        peer.flush(2.)
+        wait_until(lambda: channel.ready)
+        original_stop = session.stop
+
+        def respond():
+            while peer.wait(3.):
+                for frame in peer.drain():
+                    if frame["kind"] == "reply":
+                        self.replies.append(frame)
+                        peer.send({"kind": "published", "id": frame["id"], "sent_ns": time_ns()})
+                    elif frame["kind"] == "finish":
+                        peer.send({"kind": "statistics", "topics": {}, "tf": {}})
+                        peer.flush(2.)
+                        return
+
+        worker = Thread(target=respond, daemon=True)
+        worker.start()
+
+        def stop():
+            worker.join(3.)
+            peer.close()
+            channel.close()
+            original_stop()
+
+        session.stop = stop
+        return session
+
+
 class CarlaNativeBoundary:
     """Registry/client boundary used by the real CARLA simulator, without a server."""
 
@@ -1523,7 +1659,7 @@ class CarlaNativeBoundary:
             return self.module_dict[config["type"]](**default_args, **options)
         return CarlaMobileActor(default_args["client"], config, self.include_rgb)
 
-    def install(self, monkeypatch, rgb_camera):
+    def install(self, monkeypatch, rgb_camera=None):
         if rgb_camera is not None:
             self.module_dict["CarlaRgbCamera"] = rgb_camera
         carla = ModuleType("carla")
@@ -1552,57 +1688,88 @@ class CarlaNativeBoundary:
             for name, method in methods.items()})
         carla.WeatherParameters = lambda **values: SimpleNamespace(**values)
         carla.MapLayer = SimpleNamespace(Buildings="Buildings")
-        carla.TrafficLightState = SimpleNamespace(Red="Red", Yellow="Yellow", Green="Green", Off="Off",
-                                                 Unknown="Unknown")
         monkeypatch.setitem(sys.modules, "carla", carla)
         monkeypatch.setitem(sys.modules, "avcarla", ModuleType("avcarla"))
         monkeypatch.setitem(sys.modules, "avcarla.config", SimpleNamespace(CARLA=self))
         return self
 
 
-def fake_carla_recording_registry():
-    """Register fake SDK records through the same child-snapshot contract as native avstack."""
-    def snapshot(value, capture_child):
-        result = copy(value)
-        for name, child in vars(value).items():
-            vars(result)[name] = capture_child(child)
-        return result
+def alpamayo_model_boundary(base, monkeypatch):
+    """Replace Alpamayo checkpoint construction while using native policy records."""
+    class PolicyModel:
+        def __init__(self):
+            self.closed = False
+            self.last_input = None
+            self.prediction = base.ModelPrediction(
+                candidate_positions=np.array([[[1., 0., 0.], [2., 0., 0.]]]),
+                candidate_rotations=np.tile(np.eye(3), (1, 2, 1, 1)),
+                selected_index=0, selected_plan="forward", reasoning_text="clear",
+            )
 
-    registry = deepcopy(DEFAULT_REGISTRY)
-    registry.register_native("types", "SimpleNamespace", lambda value: {
-        name: child for name, child in vars(value).items() if not callable(child)
-    }, snapshot=snapshot)
-    registry.register_native("tests.fakes", "CarlaVector", lambda value: vars(value),
-                             snapshot=snapshot)
-    return registry
+        def predict(self, inputs):
+            self.last_input = inputs
+            return self.prediction
+
+        def close(self):
+            self.closed = True
+
+    class ModelLoader:
+        @classmethod
+        def from_config(cls, **options):
+            model = PolicyModel()
+            model.options = options
+            return model
+
+    # Keep real AlpaSim protobufs, navigation and model input/output records. Only weights
+    # and checkpoint-backed construction are replaced.
+    name = "alpasim_driver.models.alpamayo1_5_model"
+    module = ModuleType(name)
+    module.Alpamayo15Model = ModelLoader
+    monkeypatch.setitem(sys.modules, name, module)
+    return SimpleNamespace(create=PolicyModel)
 
 
-def recorded_policy_observations(count=16, start_time=-1.5, time_step=.1, speed=4.,
-                                 acceleration=0., yaw=0., route=None):
-    """A small synthetic recording supplied to policy tests as actual observed history."""
-    from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
+def camera_detector_boundary(api, monkeypatch):
+    """Replace checkpoint-backed image inference, leaving the real camera policy intact."""
+    import torch
+    from mmdet.models.data_preprocessors import DetDataPreprocessor
+    from avstack.config import MODELS
+    import avstack.modules.perception.object2dfv  # noqa: F401
 
-    observations = []
-    for index in range(count):
-        elapsed = index * time_step
-        time = start_time + elapsed
-        distance = speed * elapsed + .5 * acceleration * elapsed ** 2
-        state = PlanarEgoState(x=distance * float(np.cos(yaw)), y=distance * float(np.sin(yaw)),
-                        yaw=yaw, speed=speed + acceleration * elapsed, t=time,
-                        acceleration=acceleration)
-        observations.append(Observation(
-            time, index, {"front": np.full((4, 6, 3), index, np.uint8)},
-            vehicle_state=state, ego_speed=state.speed, route=deepcopy(route)))
-    # The first policy decision receives all recorded context in one incremental delivery.
-    origin = min(15, len(observations) - 1)
-    initial = observations[origin]
-    states = tuple(TimedStateEstimate(round(item.t * 1e6), item.t,
-                    item.vehicle_state, item.ego_speed) for item in observations[:origin + 1])
-    samples = tuple(DeliveredAcquisition(state.time_us, item.t, item.frame,
-                   item.sensor_data["front"], item.calibration.get("front"), state,
-                   item.frame - origin) for item, state in zip(observations[:origin + 1], states))
-    observations[origin] = replace(initial, deliveries={"front": samples}, state_estimates=states)
-    return tuple(observations)
+    class ImageModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gain = torch.nn.Parameter(torch.tensor(1.))
+            self.data_preprocessor = DetDataPreprocessor()
+            self.boxes = [[8., 8., 16., 16.]]
+            self.labels = [0]
+            self.last_images = []
+
+        def extract_feat(self, images):
+            values = torch.nn.functional.avg_pool2d(images.mean(dim=1, keepdim=True), 4)
+            return (values * self.gain / 255.,)
+
+        def rpn_head(self, features):
+            return (list(features), [])
+
+        def predict(self, rgb):
+            return SimpleNamespace(pred_instances=SimpleNamespace(
+                bboxes=torch.tensor(self.boxes).reshape(-1, 4),
+                scores=torch.full((len(self.boxes),), .9), labels=torch.tensor(self.labels),
+            ))
+
+    def predict(detector, images):
+        if isinstance(images, list):
+            detector.last_images = [image.copy() for image in images]
+            return [detector.predict(image) for image in images]
+        return detector.predict(images)
+
+    model = ImageModel()
+    # Only the learned detector is replaced. Preprocessing, scorer and driving adapter stay real.
+    monkeypatch.setitem(MODELS.module_dict, "MMDetObjectDetector2D",
+                        lambda **options: SimpleNamespace(model=model))
+    monkeypatch.setattr(api, "inference_detector", lambda detector, images: predict(detector, images))
+    return model
 
 
 def yolox_detection_model(predictions=None, *, image_weight=0.):
@@ -1753,41 +1920,7 @@ class TrafficServiceBoundary:
             self._server.stop(0).wait()
 
 
-def replica_detector():
-    """Create differentiable YOLOX outputs for replica pixels on a constant background."""
-    import torch
-
-    class ReplicaDetector(torch.nn.Module):
-        """Model boundary whose confidence differentiates the patch's red channel."""
-
-        def forward(self, images):
-            predictions = []
-            for image in images:
-                padding = (image - 114).abs().amax(dim=0) < 1e-6
-                rows = torch.nonzero(~padding.all(dim=1), as_tuple=True)[0]
-                columns = torch.nonzero(~padding.all(dim=0), as_tuple=True)[0]
-                box = image.new_zeros((1, 4))
-                score = image.sum() * 0
-                if len(rows) and len(columns):
-                    height, width = int(rows[-1]) + 1, int(columns[-1]) + 1
-                    content = image[:, :height, :width]
-                    changed = (content - 30).abs().amax(dim=0) > 1e-6
-                    ys, xs = torch.nonzero(changed, as_tuple=True)
-                    if len(xs):
-                        x0, x1 = int(xs.min()), int(xs.max()) + 1
-                        y0, y1 = int(ys.min()), int(ys.max()) + 1
-                        score = .5 + .4 * content[2, y0:y1, x0:x1].mean() / 255
-                        box = image.new_tensor([[(x0 + x1) / 2, (y0 + y1) / 2,
-                                                 x1 - x0, y1 - y0]])
-                classes = image.new_zeros((1, 80))
-                classes[0, 11] = 1.
-                predictions.append(torch.cat((box, score.reshape(1, 1), classes), dim=-1))
-            return torch.stack(predictions)
-
-    return ReplicaDetector()
-
-
-def docker_process_boundary(tmp_path, monkeypatch):
+def docker_process_boundary(tmp_path, monkeypatch, *, extension=None):
     """A deterministic Docker process boundary.
 
     DOCKER_MODE selects ready, race, run-fail, exit, timeout, interrupt or stop-fail.
@@ -1812,16 +1945,20 @@ with open(os.environ["DOCKER_CALLS"], "a") as stream:
     stream.write(json.dumps(args) + "\n")
 root = Path(os.environ["DOCKER_STATE"])
 mode = os.environ.get("DOCKER_MODE", "ready")
-autoware_mode = os.environ.get("DOCKER_AUTOWARE_MODE")
 def read(p):
-    try:return json.loads(p.read_text())
-    except (ValueError, FileNotFoundError):return None
+    try:
+        return json.loads(p.read_text())
+    except (ValueError, FileNotFoundError):
+        return None
+
 def locate(key):
     direct=root/key
-    if direct.exists():return direct
-    for p in root.iterdir():
-        data=read(p)
-        if isinstance(data,dict) and data.get("id")==key:return p
+    if direct.exists():
+        return direct
+    for path in root.iterdir():
+        data = read(path)
+        if isinstance(data, dict) and data.get("id") == key:
+            return path
     return direct
 if args[0] == "run":
     if mode == "run-fail":
@@ -1833,116 +1970,17 @@ if args[0] == "run":
     identity="id-"+uuid.uuid4().hex
     state = {"id":identity,"owner":labels.get("avsectester.service-owner",""),
              "labels":labels,"running":mode!="exit"}
-    if autoware_mode:
-        for i, arg in enumerate(args[:-1]):
-            if arg == "--mount" and ",target=/avsectester-run," in args[i + 1]:
-                state["autoware_run"] = args[i + 1].split("source=", 1)[1].split(",target=", 1)[0]
     (root/name).write_text(json.dumps(state))
     print(identity)
     raise SystemExit(1 if mode == "race" else 0)
-if autoware_mode and args[:2] == ["image", "inspect"]:
-    if autoware_mode == "missing-image":
-        print("No such image", file=sys.stderr)
-        raise SystemExit(1)
-    print("id-local-image")
-    raise SystemExit(0)
-if autoware_mode and args[0] == "exec":
-    import time
+if args[0] not in {"inspect", "logs", "stop", "rm"}:
+    import runpy
 
-    if args[-1].endswith("apply_carla_overrides.py"):
-        print("Applied CARLA overrides")
-        raise SystemExit(0)
-    if any(arg.endswith("/apply_interception.py") for arg in args):
-        print("Applied ROS interception rewrites")
-        raise SystemExit(0)
-    interactive = args[1] == "-i"
-    identity_index = 1
-    while args[identity_index] in {"-i", "-w", "-e"}:
-        identity_index += 1 if args[identity_index] == "-i" else 2
-    path = locate(args[identity_index])
-    if "avsectester.closed_loop.ros_interception.relay" in args:
-        import socket
-        from avsectester.closed_loop.ros_interception.wire import send_frame
-        directory = os.open(read(path)["autoware_run"], os.O_DIRECTORY)
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.connect(f"/proc/self/fd/{directory}/interception.sock")
-                send_frame(connection, {"kind": "ready"})
-                while (current := read(path)) and current["running"]:
-                    time.sleep(.05)
-        finally:
-            os.close(directory)
-        raise SystemExit(0)
-    if not interactive:
-        print("Started an Autoware process", flush=True)
-        while (current := read(path)) and current["running"]:
-            time.sleep(.05)
-        raise SystemExit(0)
-
-    def event(kind, **fields):
-        print(json.dumps({"event": kind, **fields}), flush=True)
-
-    def mode_event(mode, available, *, in_transition=False, raw_mode=None,
-                   raw_available=None, raw_in_transition=None):
-        if "--raw-operation-mode-topic" in args:
-            raw = {"mode": mode if raw_mode is None else raw_mode,
-                   "stamp": {"sec": 20, "nanosec": 0},
-                   "is_autonomous_mode_available": available if raw_available is None else raw_available,
-                   "is_in_transition": in_transition if raw_in_transition is None else raw_in_transition}
-            event("raw_mode", mode=raw["mode"], in_transition=raw["is_in_transition"], raw=raw)
-        event("mode", mode=mode, available=available, in_transition=in_transition)
-
-    event("connected")
-    if autoware_mode != "no-lidar":
-        event("lidar")
-    event("discovery", initialize=True, autonomous=autoware_mode != "no-adapi",
-          goal_subscriber=autoware_mode != "no-goal-subscriber")
-    mode_event(1, False)
-    event("mrm", state=1, behavior=1)
-    retries = goals = 0
-    for line in sys.stdin:
-        command = json.loads(line)
-        kind = command["call"]
-        request_id = command["id"]
-        if kind == "initialize":
-            retries += 1
-            if autoware_mode == "init-rejected" or (autoware_mode == "retry" and retries == 1):
-                event("result", id=request_id, success=False, message="GNSS fix unavailable")
-                continue
-            event("result", id=request_id, success=True)
-            if autoware_mode != "uninitialized":
-                event("localization", state=3)
-            event("pose", x=-1.425, y=2.0 if autoware_mode == "bad-pose" else 0.0, yaw_rad=0.0)
-            if autoware_mode == "distortion":
-                time.sleep(.2)
-                event("distortion", name="distortion_corrector", message="missing point time")
-        elif kind == "goal":
-            goals += 1
-            accepted = autoware_mode != "goal-rejected"
-            event("result", id=request_id, success=accepted,
-                  message="" if accepted else "no route")
-            # A retry run loses its first published goal before routing receives it.
-            lost = autoware_mode == "retry" and goals == 1
-            if accepted and autoware_mode != "no-route" and not lost:
-                event("route", state=2)
-                if autoware_mode == "interception-mode-disagreement":
-                    mode_event(1, True, raw_mode=0, raw_available=False, raw_in_transition=True)
-                else:
-                    mode_event(1, autoware_mode != "unavailable")
-        elif kind == "engage":
-            accepted = autoware_mode != "engage-rejected"
-            event("result", id=request_id, success=accepted,
-                  message="" if accepted else "mode transition rejected")
-            if accepted and autoware_mode != "engage-timeout":
-                if autoware_mode == "interception-mode-disagreement":
-                    mode_event(1, True, in_transition=True, raw_mode=2, raw_in_transition=False)
-                else:
-                    mode_event(2, True)
-                time.sleep(.05)
-                event("route", state=3)
-        else:
-            raise ValueError(kind)
-    raise SystemExit(0)
+    extension = os.environ.get("DOCKER_EXTENSION")
+    if extension:
+        runpy.run_path(extension, init_globals={"args": args, "locate": locate, "read": read,
+                                               "calls": Path(os.environ["DOCKER_CALLS"])})
+    raise SystemExit(f"Unsupported test Docker command: {args[0]}")
 p=locate(args[-1]);data=read(p)
 if isinstance(data,bool):data={"id":"seed-"+p.name,"owner":"","running":data}
 if args[0] == "inspect":
@@ -1966,7 +2004,8 @@ elif args[0] == "stop":
     if data is None:
         print("No such container", file=sys.stderr)
         raise SystemExit(1)
-    data["running"]=False;p.write_text(json.dumps(data))
+    data["running"] = False
+    p.write_text(json.dumps(data))
     if mode == "stop-fail":
         print("stop failed", file=sys.stderr)
         raise SystemExit(1)
@@ -1978,28 +2017,6 @@ elif args[0] == "rm":
     monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ.get("PATH", ""))
     monkeypatch.setenv("DOCKER_STATE", str(state))
     monkeypatch.setenv("DOCKER_CALLS", str(calls))
+    if extension is not None:
+        monkeypatch.setenv("DOCKER_EXTENSION", str(extension))
     return state, calls
-
-
-def autoware_process_boundary(tmp_path, monkeypatch):
-    """Fake the Docker daemon, traffic source process and JSON-speaking ROS adapter."""
-    state, calls = docker_process_boundary(tmp_path, monkeypatch)
-    monkeypatch.setenv("DOCKER_AUTOWARE_MODE", "ready")
-    assets = tmp_path / "assets"
-    official = assets / "run"
-    official.mkdir(parents=True)
-    (official / "carla_traffic_light_state_source.py").write_text(
-        "import time\nwhile True:\n    time.sleep(1)\n")
-    (official / "autoware_traffic_light_state_publisher.py").touch()
-    town = assets / "map_tools/maps/Town10HD"
-    town.mkdir(parents=True)
-    for filename in ("lanelet2_map.osm", "pointcloud_map.pcd", "map_projector_info.yaml"):
-        (town / filename).touch()
-    dds = tmp_path / "dds"
-    dds.mkdir()
-    (dds / "cyclonedds.xml").touch()
-    data = tmp_path / "autoware_data"
-    data.mkdir()
-    options = {"assets_directory": assets, "dds_directory": dds,
-               "autoware_data_directory": data, "work_directory": tmp_path / "runs"}
-    return state, calls, options

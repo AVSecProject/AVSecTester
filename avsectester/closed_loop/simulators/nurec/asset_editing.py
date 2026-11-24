@@ -4,7 +4,7 @@ AlpaSim's Apache-2.0 sensorsim.proto omits ``SensorsimService.edit_assets``. The
 repeat the documented message fields, numbers and types from
 https://docs.nvidia.com/nurec/api/nre.grpc.protos.sensorsim.html and
 https://docs.nvidia.com/nurec/api/nre.grpc.protos.common.html, so requests are wire-compatible
-with the NRE service. Only the fields this framework sends or reads are declared;
+with the NRE service. Only the fields this framework sends or reads are declared.
 ``EditAssetsRequest.replace`` (field 2) is omitted.
 """
 

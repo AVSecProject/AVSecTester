@@ -1,15 +1,16 @@
 """Adversarial testing for autonomous driving, organized by internal dependency layer.
 
-* ``geometry``, ``validation``, ``type_paths`` and ``serialization`` provide low-level
-  mathematics, checks, callable imports, JSON serialization and independent snapshots.
+* ``geometry``, ``validation``, ``type_paths``, ``structured_arrays`` and ``serialization``
+  provide geometry, validation, type-path imports, structured arrays and record snapshots.
 * ``data_types`` contains shared observations, commands, states, detections and data targets.
 * ``datasets``, ``maps`` and ``rendering`` provide source data, semantic maps and object rendering.
-* ``closed_loop.simulators`` and ``closed_loop.avstacks`` export their interfaces; concrete
-  simulators and driving systems live in implementation modules. Their ``base`` modules own the
-  simulator/runtime and AVStack/ObservationPipeline contracts. ``closed_loop`` also provides stage
-  hooks and environments; driving-component declarations live in ``avstacks.driving_adapter``.
-* ``attack`` defines attack interfaces and reusable insertion and optimization tools;
-  ``runlog`` records and reads closed-loop traces.
+* ``closed_loop.simulators`` and ``closed_loop.avstacks`` export their interfaces.
+  Concrete simulators and driving systems live in implementation modules. Their ``base`` modules
+  own the simulator/runtime and AVStack/ObservationPipeline contracts. ``closed_loop`` also provides
+  hooks, environments, Docker lifecycle, timing and ROS transport. Configure driving
+  components and scorers through ``closed_loop.avstacks.driving_adapter``.
+* ``attack`` defines attack interfaces and reusable insertion and optimization tools.
+* ``runlog`` records and reads closed-loop traces.
 * ``execution`` owns the runner, isolated services, attack dispatch and frame-data cache.
 * ``implemented_attacks`` composes those interfaces and tools into concrete attacks.
 * ``evaluation`` computes metrics and formats reports and visualizations from recorded data.

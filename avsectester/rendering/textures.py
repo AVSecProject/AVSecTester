@@ -7,7 +7,7 @@ import numpy as np
 
 from avsectester.validation import require_positive_integer
 
-# Bundled public-domain texture shared by attacks; sources are listed in assets/SOURCES.md.
+# Bundled public-domain texture shared by attacks. Sources are listed in assets/SOURCES.md.
 STOP_SIGN_FACE = Path(__file__).resolve().with_name("assets") / "mutcd_r1-1_stop.png"
 'Path to the bundled nominal stop-sign face texture.'
 
@@ -23,7 +23,7 @@ class Texture(Protocol):
 def load_rgba_image(value: np.ndarray | str | Path | Texture) -> np.ndarray:
     """Load one RGB/RGBA image as an independent uint8 RGBA array.
 
-    Texture objects expose ``rgba()``. Paths are interpreted by the caller; configuration
+    Texture objects expose ``rgba()``. Paths are interpreted by the caller. Configuration
     loading resolves them relative to the configuration file before constructing a texture.
     """
     if callable(getattr(value, "rgba", None)):

@@ -20,7 +20,7 @@ def _dependencies() -> tuple[Any, Any, Any]:
         from embreex.mesh_construction import TriangleMesh
     except (ImportError, OSError) as error:
         raise ImportError(
-            "Mesh depth requires trimesh and embreex; install avsectester[nurec]"
+            "Mesh depth requires trimesh and embreex. Install avsectester[nurec]"
         ) from error
     return trimesh, EmbreeScene, TriangleMesh
 
@@ -28,7 +28,7 @@ def _dependencies() -> tuple[Any, Any, Any]:
 class MeshRaycaster:
     """An immutable triangle mesh accelerated by Embree.
 
-    ``vertices`` are finite world coordinates with shape ``(N, 3)``; ``faces`` are
+    ``vertices`` are finite world coordinates with shape ``(N, 3)``. ``faces`` are
     integer vertex indices with shape ``(M, 3)``. Construction copies both arrays.
     Queries return Euclidean distances along each ray, with ``inf`` for no hit.
     Embree is required for mesh queries. Its optional installation dependencies load only
@@ -53,7 +53,7 @@ class MeshRaycaster:
             raise ValueError("Mesh faces contain an invalid vertex index")
         # Do not clean or expand the scene's millions of triangles. Keeping the
         # original indexed mesh also avoids a second, much larger triangle array.
-        # Translate before Embree converts ray origins to float32; otherwise a
+        # Translate before Embree converts ray origins to float32. Otherwise a
         # scene's large world offset would unnecessarily reduce local precision.
         self._origin = (vertices.min(axis=0) / 2 + vertices.max(axis=0) / 2
                         if len(vertices) else np.zeros(3))

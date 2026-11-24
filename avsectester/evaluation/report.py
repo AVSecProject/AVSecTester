@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from .metric import Metric, UnavailableMetricValue
+from .metric import Metric, UnavailableMetricValue, _require_unique_metric_types
 
 
 @dataclass(frozen=True)
@@ -28,8 +28,7 @@ class EvaluationConfiguration:
             values = tuple(self.metrics)
             if any(not isinstance(metric, Metric) for metric in values):
                 raise TypeError("evaluation.metrics must contain Metric instances")
-            if len({type(metric) for metric in values}) != len(values):
-                raise ValueError("evaluation.metrics must not repeat a metric type")
+            _require_unique_metric_types(values)
             object.__setattr__(self, "metrics", values)
 
 
@@ -291,7 +290,11 @@ def _table(rows: Sequence[Sequence[str]]) -> list[str]:
 
 
 def format_number(value: Any) -> str:
-    """Format report scalars without changing JSON/CSV precision; missing values use an em dash."""
+    """Format report scalars without changing JSON or CSV precision.
+
+    Display booleans as yes or no and real values with four decimal places. Missing and
+    nonfinite values use an em dash. Integers display without decimal places.
+    """
     if value is None or isinstance(value, UnavailableMetricValue):
         return "—"
     if isinstance(value, (bool, np.bool_)):

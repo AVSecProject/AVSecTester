@@ -60,8 +60,7 @@ model. The attack has no default model.
 ## Selection and placement
 
 The metabuilder uses the framework's segment helper and checks each start through the public
-closed-loop services. Starts without sufficient recorded history or deployment support are
-excluded.
+closed-loop services.
 
 At each start, the metabuilder constructs the same navigation route as the simulator reset,
 using its `route_generator` setting, complete recorded trajectory and scenario map. Map and
@@ -104,7 +103,7 @@ ranging and available braking determine the outcome. The desired gap is not a ha
 limit. See [Driving systems](../guides/driving-systems.md#nurec-rule-based-driving-system) for
 parameters and limitations.
 
-The configuration records camera and point-cloud payloads as `model_input` at each decision.
+The configuration records camera and point-cloud payloads as `model_input` at each capture.
 NRE renders the inserted vehicle, so `raw` captures would be identical. Use those captures,
 insertion receipts and object-visibility evidence to inspect deployment. Driving and trajectory
 metrics compare the treatments. `DrivingMetrics` includes the inserted vehicle in its

@@ -33,6 +33,10 @@ def test_render_resolved(camera, optical_from_world):
     np.testing.assert_array_equal(rendered[0][40, 50], [0, 0, 255])
     np.testing.assert_array_equal(rendered[0][40, 56], [255, 0, 0])
     np.testing.assert_array_equal(rendered[0][0, 0], clean[0, 0])
+    evidence = CuboidVisibilityEstimator().estimate(
+        near, camera, optical_from_world, occluders={}, camera_name="front")
+    with pytest.raises(ValueError, match="visibility is unknown"):
+        render_resolved(clean, camera, optical_from_world, near, replace(evidence, visibility=None))
 
 
 def test_patch_compositor(camera, optical_from_world):
@@ -54,5 +58,3 @@ def test_patch_compositor(camera, optical_from_world):
     np.testing.assert_array_equal(mask, plain_mask)
     np.testing.assert_array_equal(colored[mask == 0], frame[mask == 0])
     assert np.all(colored[mask > 0] == [0, 255, 0]) and np.any(plain != colored)
-    with pytest.raises(ValueError, match="visibility is unknown"):
-        render_resolved(frame, camera, optical_from_world, item, replace(evidence, visibility=None))

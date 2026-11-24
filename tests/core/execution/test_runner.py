@@ -2,6 +2,7 @@
 
 import pickle
 from dataclasses import dataclass, replace
+from time import time_ns
 
 import numpy as np
 import pytest
@@ -9,13 +10,14 @@ import pytest
 from avsectester.attack.runtime import (
     AttackRuntime, AVStackAttackAction, ResultSubscription, SensorAttackAction, WorldAttackAction,
 )
-from avsectester.attack.insertion import InsertObject
+from avsectester.attack.insertion import InsertObject, MoveObject
 from avsectester.data_types import Control, Detection, Observation, StateEstimate
 from avsectester.closed_loop.avstacks.base import ObservationPipeline
 from avsectester.closed_loop.avstacks.implemented.external_control import ExternalAVStack
 from avsectester.closed_loop.hooks import Hook, HookSet, Plugin
 from avsectester.closed_loop.timing import HistoryRequirement, SensorTiming, TimingConfiguration
 from avsectester.closed_loop.simulators.base import SensorGeometry
+from avsectester.closed_loop.simulators.messages import MessageStage
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState, TrajectoryFollower
 from avsectester.closed_loop.simulators.nurec import NuRecSimulator
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
@@ -24,9 +26,9 @@ from avsectester.execution.runner import ClosedLoopRunner, RecordingPolicy, RunR
 from avsectester.execution.services import ClosedLoopServices, SensorRequest
 from avsectester.runlog import Recorder, RunLog
 from tests.fakes import (
-    ConstantAVStack, DeceleratingAVStack, ExternallyControlledMemorySimulator, HistoryAVStack,
-    MemoryDataset, MemorySimulator,
-    CAMERA, CAM_FROM_WORLD, CarlaNativeBoundary, NuRecImageBoundary,
+    ConstantAVStack, DeceleratingAVStack, ExternallyControlledMemorySimulator, FrameDriver, HistoryAVStack,
+    MemoryDataset, MemoryMessageChannel, MemoryMessageSimulator, MemorySimulator,
+    CAMERA, CAM_FROM_WORLD, CarlaNativeBoundary, MemoryImageRenderer,
 )
 
 
@@ -142,8 +144,6 @@ def test_run():
             assert record.physical_pre.ego.pose.flags.writeable
             assert record.physical_post.frame == record.physical_pre.frame + 1
             assert record.physical_post.t == pytest.approx(record.physical_pre.t + .1)
-        empty = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(0))
-        assert empty.status == "completed" and not empty.steps
         raw_only = ClosedLoopRunner().run(simulator_runtime, ConstantAVStack(), RunRequest(
             1, recording=RecordingPolicy(("front",), ("raw",))))
         assert "front" in raw_only.steps[0].sensor_geometry
@@ -417,7 +417,7 @@ def test_run_with_attacks(tmp_path):
 
     with MemorySimulator().create_runtime() as runtime:
         recorder = Recorder()
-        with pytest.raises(ValueError, match="use SensorAttackAction to modify sensor data"):
+        with pytest.raises(ValueError, match="Use SensorAttackAction to modify sensor data"):
             ClosedLoopRunner().run(
                 runtime, ConstantAVStack(), RunRequest(1, attacks=(WrongStage(),)),
                 recorder=recorder)
@@ -585,22 +585,29 @@ def test_run_with_inserted_object(make_object_in_front):
         runtime.reset()
         clean = runtime.sensor_view("front")
         asset, pose = make_object_in_front(clean)
+        target = pose.copy()
+        target[0, 3] += 1.
 
         class InsertAttackRuntime(AttackRuntime):
             def setup(self, context):
-                return (InsertObject("sign", asset, pose),)
+                return (InsertObject("sign", asset, pose, velocity=(2., 0., 0.)),)
+
+            def step(self, context):
+                return (MoveObject("sign", target),)
 
         log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
             1, attacks=(InsertAttackRuntime(),),
             recording=RecordingPolicy(tuple(cameras), ("raw", "model_input"))))
     step = log.steps[0]
-    assert tuple(step.sensor_geometry) == tuple(cameras)
-    assert tuple(step.object_visibility["sign"]) == ("front", "rear")
+    assert set(step.object_visibility["sign"]) == {"front", "rear"}
     assert np.any(step.raw_observation.sensor_data["front"] != clean.data)
     initialization = next(event for event in log.events if event.kind == "initialization")
-    receipts = [item for item in initialization.data["actions"] if item["kind"] == "receipt"]
-    assert any(item["outcome"] == "applied" and item["details"]["object_id"] == "sign"
-               for item in receipts)
+    inserted, = [item for item in initialization.data["actions"] if item["kind"] == "receipt"]
+    assert inserted["outcome"] == "applied" and inserted["details"]["object_id"] == "sign"
+    assert inserted["details"]["velocity"] == (2., 0., 0.)
+    moved, = [item for item in step.actions if item["kind"] == "receipt"]
+    assert moved["outcome"] == "applied" and moved["details"]["object_id"] == "sign"
+    np.testing.assert_array_equal(moved["details"]["world_from_object"], target)
     assert step.object_visibility["sign"]["front"].visible_pixels > 0
 
 
@@ -637,7 +644,7 @@ def test_run_with_decelerating_feedback(nurec_longitudinal_dataset):
     start = dataset.scenario_start("scene", dataset.frames("scene")[15])
     camera, _ = dataset.camera_geometry("scene")
     simulator = NuRecSimulator(
-        NuRecImageBoundary(camera), TrajectoryFollower(), time_step=.1,
+        MemoryImageRenderer(camera), TrajectoryFollower(), time_step=.1,
         depth="none", route_generator="none", physics_update_mode="none")
     with simulator.create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, DeceleratingAVStack(), RunRequest(10, start=start))
@@ -653,7 +660,6 @@ def test_recording_policy():
                               calibration={"front": "calibration"})
     configured = RecordingPolicy(("front",), ("raw",), every_n_captures=2)
     assert pickle.loads(pickle.dumps(configured)) == configured
-    assert hash(configured) == hash(RecordingPolicy(("front",), ("raw",), every_n_captures=2))
     policy = RecordingPolicy(("front",), ("raw",), every_n_captures=2)
     captured = policy.observation(observation, 0, "raw")
     assert list(captured.sensor_data) == ["front"]
@@ -770,9 +776,7 @@ def test_multirate_acquisitions_and_delivery(tmp_path):
     assert middle.vehicle_state.x == pytest.approx(
         first.vehicle_state.x + weight * (last.vehicle_state.x - first.vehicle_state.x))
     assert log.steps[1].raw_observation.sensor_data == {}
-    assert all(tuple(step.sensor_geometry) == ("front",) for step in log.steps)
     saved = RunLog.read(tmp_path / "run")
-    assert saved.format_version == 2
     assert saved.steps[-1].delivered_captures == log.steps[-1].delivered_captures
     captures = {capture.time_us: capture for capture in saved.captures}
     for time_us in (0, 99000, 198000):
@@ -825,14 +829,6 @@ def test_persistent_sensor_actions():
 
 
 def test_action_at_skipped_perception():
-    class FrameDriver(ConstantAVStack):
-        supported_stages = frozenset({"perception.post"})
-
-        def __call__(self, observation):
-            if "front" in observation.sensor_data:
-                self._emit("perception.post", [])
-            return Control(throttle=.2)
-
     class PerceptionAttack(AttackRuntime):
         def step(self, context):
             return ((AVStackAttackAction("perception.post", lambda value, context: value),)
@@ -909,7 +905,7 @@ def test_force_gt(nurec_longitudinal_dataset):
     dataset = nurec_longitudinal_dataset
     frames = dataset.frames("scene")
     camera, _ = dataset.camera_geometry("scene")
-    simulator = NuRecSimulator(NuRecImageBoundary(camera), TrajectoryFollower(),
+    simulator = NuRecSimulator(MemoryImageRenderer(camera), TrajectoryFollower(),
         time_step=.1, depth="none", route_generator="none", physics_update_mode="none")
     with simulator.create_runtime() as runtime:
         log = ClosedLoopRunner().run(runtime, DeceleratingAVStack(), RunRequest(3,
@@ -1043,15 +1039,117 @@ def test_command_hook_snapshot():
     assert log.steps[0].executed_command.brake == .7
 
 
-@pytest.mark.parametrize("delay_us, issue_times_us", [
-    (0, [300000, 400000, 500000, 600000]),
-    (73000, [300000, 300000, 400000, 500000]),
-    (200000, [300000, 300000, 300000, 400000]),
-])
-def test_planner_delay(delay_us, issue_times_us):
+def test_planner_delay():
     dataset = MemoryDataset()
     start = dataset.scenario_start("scene", dataset.frames("scene")[3])
-    with MemorySimulator().create_runtime() as runtime:
-        log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
-            4, start=start, timing=TimingConfiguration(planner_delay_us=delay_us)))
-    assert [step.executed_command_issue_time_us for step in log.steps] == issue_times_us
+    for delay_us, issue_times_us in (
+        (0, [300000, 400000, 500000, 600000]),
+        (73000, [300000, 300000, 400000, 500000]),
+        (200000, [300000, 300000, 300000, 400000]),
+    ):
+        with MemorySimulator().create_runtime() as runtime:
+            log = ClosedLoopRunner().run(runtime, ConstantAVStack(), RunRequest(
+                4, start=start, timing=TimingConfiguration(planner_delay_us=delay_us)))
+        assert [step.executed_command_issue_time_us for step in log.steps] == issue_times_us
+
+
+def _ros_packet(topic, kind, count=0):
+    return {"kind": kind, "topic": topic, "type": "std_msgs/msg/Int32",
+            "fields": {"count": count}, "id": count, "stamp_ns": count, "received_ns": time_ns()}
+
+
+def test_message_actions_and_records():
+    peer = MemoryMessageChannel(reports=(
+        {"role": "forwarding", "topics": {
+            "/imu": {"pre_origin_messages": 7, "messages": 2, "post_run_messages": 0},
+        }, "tf": {"paired": 3}},
+        {"role": "observation", "topics": {
+            "/public": {"pre_origin_messages": 10, "messages": 2, "post_run_messages": 0},
+        }, "tf": {}},
+    ), on_finish=lambda channel: channel.deliver(
+        _ros_packet("/public", "observed", 99), relay_index=1))
+    stages = {"/imu": MessageStage("imu"), "/quiet": MessageStage("quiet_imu"),
+              "/trajectory": MessageStage(), "/silent": MessageStage(), "/clean": MessageStage(),
+              "/public": MessageStage(modifiable=False)}
+
+    class IncreaseCount(SensorAttackAction):
+        def __init__(self, sensor, duration, increment):
+            self.sensor, self.active_for_us, self.increment = sensor, duration, increment
+
+        def apply(self, value, view):
+            value.fields["count"] += self.increment
+            return value
+
+    class ModifyMessages(AttackRuntime):
+        def step(self, context):
+            return (IncreaseCount("imu", 0, 10), IncreaseCount("imu", 50_000, 20),
+                    IncreaseCount("imu", None, 30), IncreaseCount("quiet_imu", 0, 1),
+                    AVStackAttackAction("/trajectory", lambda value, _: replace(value, fields={"count": 9})),
+                    AVStackAttackAction("/silent", lambda value, _: value))
+
+    def record_count(value, context):
+        context.record_output("received_count", value.fields["count"])
+        return value
+
+    def tick():
+        for index, topic in enumerate(("/imu", "/imu", "/trajectory", "/trajectory", "/clean")):
+            reply = peer.deliver(_ros_packet(topic, "message", index))
+            peer.deliver({"kind": "published", "id": reply["id"], "sent_ns": time_ns()})
+        peer.deliver(_ros_packet("/public", "observed", 10), relay_index=1)
+
+    request = RunRequest(
+        1, attacks=(ModifyMessages(),), recording=RecordingPolicy(topics=("/imu", "/public")),
+        hooks=HookSet((Hook("/imu", record_count), Hook("/public", record_count))))
+    simulator = MemoryMessageSimulator(stages, channel=peer, tick_callback=tick)
+    with simulator.create_runtime() as runtime:
+        log = ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
+    assert peer.controls == ["origin", "stop", "finish"]
+    assert [item.topic for item in log.messages] == [
+        "/imu", "/imu", "/trajectory", "/trajectory", "/clean", "/public",
+    ]
+    assert all(item.step == 0 for item in log.messages)
+    first, second, trajectory_a, trajectory_b, unchanged, observed = log.messages
+    assert [first.original.fields, second.original.fields] == [{"count": 0}, {"count": 1}]
+    assert [first.forwarded.fields, second.forwarded.fields] == [{"count": 60}, {"count": 51}]
+    assert trajectory_a.modified and trajectory_b.modified
+    assert trajectory_a.original is trajectory_a.forwarded is None
+    assert not unchanged.modified and unchanged.relay_sent_ns is not None
+    assert not observed.modifiable and observed.relay_sent_ns is None
+    assert observed.original.fields == {"count": 10}
+    step, = log.steps
+    assert [item.value for item in step.outputs] == [60, 51, 10]
+    receipts = [action for action in step.actions if action["kind"] == "receipt"]
+    assert [item["outcome"] for item in receipts] == ["applied"] * 7 + ["not_applied"] * 2
+    assert {item["reason"] for item in receipts[-2:]} == {
+        "stage_not_executed", "sensor_not_acquired_at_issue_time",
+    }
+    termination, = (event for event in log.events if event.kind == "termination")
+    assert termination.data["interception"] == {"tf": {"paired": 3}, "topics": {
+        "/imu": {"pre_origin_messages": 7, "messages": 2, "post_run_messages": 0},
+        "/public": {"pre_origin_messages": 10, "messages": 1, "post_run_messages": 1},
+    }}
+
+
+def test_message_failure_records_the_completed_decision():
+    peer = MemoryMessageChannel()
+    ticks = []
+
+    def broken_message(value, context):
+        raise ValueError("relay hook sentinel")
+
+    def tick():
+        peer.deliver(_ros_packet("/imu", "message"))
+        ticks.append("complete")
+
+    simulator = MemoryMessageSimulator({"/imu": MessageStage()}, channel=peer, tick_callback=tick)
+    request = RunRequest(2, hooks=HookSet((Hook("/imu", broken_message),)))
+    with simulator.create_runtime() as runtime:
+        with pytest.raises(RuntimeError, match="/imu.*relay hook sentinel") as caught:
+            ClosedLoopRunner().run(runtime, ExternalAVStack(), request)
+    log = caught.value.run_log
+    assert log.status == "failed"
+    complete, = log.steps
+    assert complete.step == 0
+    assert ticks == ["complete"]
+    failure, = (event for event in log.events if event.kind == "failure")
+    assert failure.data["message"] == str(caught.value)

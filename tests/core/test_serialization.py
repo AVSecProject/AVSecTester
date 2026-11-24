@@ -47,13 +47,6 @@ class ClassifiedSensorResult(SensorResult):
 Point = namedtuple("Point", "x y")
 VALUES = [
     pytest.param(None, None, id="none"),
-    pytest.param(PointCloud(np.array([[1., 2., 3.]], np.float32), np.array([.5], np.float32)),
-                 PointCloud(np.array([[1., 2., 3.]], np.float32), np.array([.5], np.float32)),
-                 id="point-cloud"),
-    pytest.param(PointCloud(np.array([[4., 5., 6.]], np.float32)),
-                 PointCloud(np.array([[4., 5., 6.]], np.float32)), id="point-cloud-no-intensity"),
-    pytest.param(LidarCalibration(np.eye(4), .1), LidarCalibration(np.eye(4), .1),
-                 id="lidar-calibration"),
     pytest.param({"_avsectester_type": "user", "_avsectester_keys": ["x"]},
                  {"_avsectester_type": "user", "_avsectester_keys": ["x"]}, id="reserved-keys"),
     pytest.param(torch.tensor([[1., 2.]], requires_grad=True),
@@ -62,10 +55,6 @@ VALUES = [
     pytest.param(np.int64(7), 7, id="numpy-scalar"),
     pytest.param(Path("artifacts/patch.png"), Path("artifacts/patch.png"), id="path"),
     pytest.param(b"sensor-bytes", b"sensor-bytes", id="bytes"),
-    pytest.param(WorldSnapshot(.1, 3, traffic_lights={"signal-1": "red"}),
-                 WorldSnapshot(.1, 3, traffic_lights={"signal-1": "red"}), id="world"),
-    pytest.param(ObjectVisibility("actor_cuboids", ("actor",), 12),
-                 ObjectVisibility("actor_cuboids", ("actor",), 12), id="visibility"),
     pytest.param({"list": [1, None], "tuple": ("car", .9)},
                  {"list": [1, None], "tuple": ("car", .9)}, id="nested"),
     pytest.param(Point(1, [2, 3]), (1, [2, 3]), id="namedtuple"),
@@ -77,16 +66,6 @@ VALUES = [
     pytest.param(np.arange(6, dtype=np.int16).reshape(2, 3).T,
                  np.array([[0, 3], [1, 4], [2, 5]], np.int16), id="transposed-array"),
     pytest.param(np.empty((0, 4), dtype=np.uint8), np.empty((0, 4), np.uint8), id="empty-array"),
-    pytest.param(PinholeCamera(np.array([[50., 0., 16.], [0., 55., 12.], [0., 0., 1.]]), 32, 24),
-                 PinholeCamera(np.array([[50., 0., 16.], [0., 55., 12.], [0., 0., 1.]]), 32, 24),
-                 id="pinhole"),
-    pytest.param(FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4),
-                 FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4), id="ftheta"),
-    pytest.param(WindshieldDistortion((0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
-                                     (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.)),
-                 WindshieldDistortion((0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.),
-                                     (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.)),
-                 id="windshield"),
 ]
 
 
@@ -113,30 +92,32 @@ def assert_value(actual, expected):
 @pytest.mark.parametrize("value,expected", VALUES)
 def test_encode_and_decode(value, expected):
     registry = SerializationRegistry()
-    for record in (WorldSnapshot, ObjectVisibility, PinholeCamera, FThetaCamera,
-                   WindshieldDistortion, PointCloud, LidarCalibration):
-        registry.register_dataclass(record)
     assert_value(registry.decode(registry.encode(value)), expected)
 
 
 def test_default_registry():
-    records = (Control(throttle=.2), Unavailable("absent"), TargetSpec((0., 0., 2., 2.), label="car"),
-               Detection((1., 0., 0.), (4., 2., 1.), 0., "car", .9),
-               FrameReference("scene", 1, "frame-1", .1), PlanarEgoState(),
-               PointCloud(np.array([[1., 2., 3.]], np.float32), np.array([.7], np.float32)),
-               LidarCalibration(np.eye(4), .1))
+    identity_section = (0., 1., 0., 0., 0., 0.), (0., 0., 0., 1., 0., 0.)
+    records = (
+        Control(throttle=.2), Unavailable("absent"), TargetSpec((0., 0., 2., 2.), label="car"),
+        Detection((1., 0., 0.), (4., 2., 1.), 0., "car", .9),
+        FrameReference("scene", 1, "frame-1", .1), PlanarEgoState(),
+        PointCloud(np.array([[1., 2., 3.]], np.float32), np.array([.7], np.float32)),
+        PointCloud(np.array([[4., 5., 6.]], np.float32)), LidarCalibration(np.eye(4), .1),
+        WorldSnapshot(.1, 3, traffic_lights={"signal-1": "red"}),
+        ObjectVisibility("actor_cuboids", ("actor",), 12),
+        PinholeCamera(np.array([[50., 0., 16.], [0., 55., 12.], [0., 0., 1.]]), 32, 24),
+        FThetaCamera(16., 12., (0., 20.), 32, 24, (0., .05), max_angle=1.4),
+        WindshieldDistortion(*identity_section, *identity_section),
+    )
     for record in records:
         assert_value(DEFAULT_REGISTRY.decode(DEFAULT_REGISTRY.encode(record)), record)
 
 
 def test_register_dataclass():
     registry = SerializationRegistry()
-    for record in (Control, Unavailable, TargetSpec, Detection, FrameReference, Measurement, Marker):
-        registry.register_dataclass(record)
-    for value in (Control(throttle=.4), Unavailable("no map"), TargetSpec((1., 2., 3., 4.)),
-                  Detection((8., 0., 1.), (4., 2., 2.), 0., "car", .9),
-                  FrameReference("scene", 0, "first", 0.), Marker(),
-                  Measurement(np.arange(12, dtype=np.float32).reshape(3, 4)[:, ::2])):
+    registry.register_dataclass(Measurement)
+    registry.register_dataclass(Marker)
+    for value in (Marker(), Measurement(np.arange(12, dtype=np.float32).reshape(3, 4)[:, ::2])):
         assert_value(registry.decode(registry.encode(value)), value)
     with pytest.raises(TypeError, match="register_dataclass"):
         registry.encode(UnregisteredMeasurement(.5))
@@ -208,11 +189,31 @@ def test_snapshot():
     with pytest.raises(TypeError, match="independent snapshot"):
         invalid.snapshot(source)
 
+    pixels = np.arange(3, dtype=np.uint8)
+    objects = np.array([{"score": 1.}], dtype=object)
+    masked = np.ma.masked_array([1., 2.], mask=[False, True])
+    dates = np.array(["2026-11-07"], dtype="datetime64[D]")
+    durations = np.array([3], dtype="timedelta64[s]")
+    snapshot = registry.snapshot({"pixels": pixels, "objects": objects, "masked": masked,
+                                  "dates": dates, "durations": durations})
+    pixels.fill(0)
+    objects[0]["score"] = 99.
+    masked.mask[0] = True
+    dates[0] = "2026-11-08"
+    durations[0] = 4
+    np.testing.assert_array_equal(snapshot["pixels"], [0, 1, 2])
+    assert snapshot["pixels"].flags.writeable
+    assert snapshot["objects"][0] == {"score": 1.}
+    assert isinstance(snapshot["masked"], np.ma.MaskedArray)
+    np.testing.assert_array_equal(snapshot["masked"].mask, [False, True])
+    np.testing.assert_array_equal(
+        snapshot["dates"], np.array(["2026-11-07"], dtype="datetime64[D]"))
+    np.testing.assert_array_equal(snapshot["durations"], np.array([3], dtype="timedelta64[s]"))
 
-def test_decode():
+
+def test_decode_rejects_unsafe_array_dtype():
     registry = SerializationRegistry()
     encoded = registry.encode(np.arange(3, dtype=np.float32))
-    np.testing.assert_array_equal(registry.decode(encoded), [0., 1., 2.])
     unsafe = {**encoded, "dtype": "O"}
     with pytest.raises(ValueError, match="Unsafe array dtype"):
         registry.decode(unsafe)

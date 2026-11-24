@@ -22,7 +22,7 @@ def route_progress(points: np.ndarray, route_points: np.ndarray) -> np.ndarray:
 
     The first and last nonzero segments extend beyond recorded support for distance
     measurement only. This lets analysis distinguish crossing beyond a recording that
-    ends before its stop line; no observations or trajectory states are manufactured.
+    ends before its stop line. No observations or trajectory states are manufactured.
     """
     points = np.asarray(points, dtype=float)
     route = np.asarray(route_points, dtype=float)
@@ -67,7 +67,7 @@ def control_from_user_data(user_data: Mapping[str, Any]) -> TrafficControl:
     required = ("sign_id", "sign_pose", "sign_extent", "sign_native_category")
     missing = [name for name in required if name not in user_data]
     if missing:
-        raise ValueError(f"Stop-approach metadata is missing {missing}; required: {list(required)}")
+        raise ValueError(f"Stop-approach metadata is missing {missing}. Required: {list(required)}")
     return TrafficControl(
         str(user_data["sign_id"]), "stop_sign", str(user_data["sign_native_category"]),
         np.asarray(user_data["sign_pose"]), tuple(user_data["sign_extent"]), "face_center",
@@ -96,7 +96,7 @@ class StopApproach:
     stop_line_lane_ids: tuple[str, ...] = ()
 
     def to_segment(self) -> AttackSegment:
-        """Persist JSON-like values and NumPy arrays; never put custom records in user_data."""
+        """Persist JSON-like values and NumPy arrays. Never put custom records in user_data."""
         return AttackSegment(self.scenario_id, self.start, self.stop, {
             "sign_id": self.sign_id,
             "sign_pose": self.sign_pose.copy(), "sign_extent": list(self.sign_extent),
@@ -147,7 +147,7 @@ def select_stop_approach(
 
     Only stop_sign stop lines are eligible. Traffic-light, yield-sign and unknown
     stop lines are excluded. The segment starts at the earliest frame within ``approach_m``
-    of the line that has the required history; an approach whose start is closer to the
+    of the line that has the required history. An approach whose start is closer to the
     line than ``min_approach_m`` is rejected.
     """
     require_positive_number(approach_m, "approach_m")

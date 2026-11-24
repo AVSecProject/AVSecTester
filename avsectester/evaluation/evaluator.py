@@ -20,7 +20,8 @@ from avsectester.runlog import RunLog
 from avsectester.validation import require_positive_integer
 
 from .metric import (
-    ComparisonGroup, Metric, MetricDescription, MetricField, PairMetric, TreatmentPair, UnavailableMetricValue,
+    ComparisonGroup, Metric, MetricDescription, MetricField, PairMetric, TreatmentPair,
+    UnavailableMetricValue, _require_unique_metric_types,
 )
 from .report import EvaluationReport, _json_data
 
@@ -30,9 +31,8 @@ class RunGroup:
     """Ordered treatment logs sharing a segment, seed and repeat, including unsuccessful runs.
 
     ``logs`` preserves the caller's treatment order. ``errors`` supplies execution or
-    reading failures separately from the logs. RunGroup contains every run;
-    ComparisonGroup, passed to metrics, contains completed runs only. Maps are saved evidence, never queried
-    from a dataset during evaluation.
+    reading failures separately from the logs. RunGroup contains every run.
+    ComparisonGroup, passed to metrics, contains completed runs only. Evaluation uses saved maps.
     """
 
     segment_index: int
@@ -54,14 +54,15 @@ def evaluate_groups(
 ) -> EvaluationReport:
     """Evaluate run metrics and each treatment pair in the supplied group and log order.
 
-    Failed and incomplete logs remain in the report with their errors; metrics receive
-    completed logs only. Pair differences are B minus A, and each pair metric is evaluated
+    Failed and incomplete logs remain in the report with their errors. Metrics receive
+    completed logs only. Each metric type may be supplied once. Pair differences are B minus A, and each pair metric is evaluated
     once per completed unordered pair. Metric failures are recorded without discarding
     other measurements. With ``repeats`` above one, each group's ``repeat`` must be below
     ``repeats`` and unique within its part, segment and seed. Pair metrics then also compare
     the completed repeats of each treatment. The caller chooses metrics and owns all output files.
     """
     require_positive_integer(repeats, "repeats")
+    _require_unique_metric_types(metrics)
     repeated = repeats > 1
     if repeated:
         identities = [(group.part, group.segment_index, group.seed, group.repeat) for group in groups]
@@ -115,7 +116,7 @@ def evaluate_groups(
                     row["reasons"].update(reasons)
                     row["metric_types"].update(kinds)
             except Exception as error:
-                report.record_error(type(metric).__name__, error, **context)
+                report.record_error(labels[type(metric)], error, **context)
         comparisons = []
         for first, second in itertools.combinations(treatments, 2):
             first_row, second_row = treatments[first], treatments[second]
@@ -157,7 +158,7 @@ def _evaluate_pair(report: EvaluationReport, pair: TreatmentPair,
             row["reasons"].update(reasons)
             row["metric_types"].update(kinds)
         except Exception as error:
-            report.record_error(type(metric).__name__, error, **context)
+            report.record_error(label, error, **context)
 
 
 def _evaluate_repeat_pairs(report: EvaluationReport, groups: Sequence[RunGroup],

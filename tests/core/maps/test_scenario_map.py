@@ -62,7 +62,9 @@ def test_scenario_map():
     missing.clear()
     np.testing.assert_array_equal(scenario_map.drivable_area[0][0], [0., -1., 0.])
     np.testing.assert_array_equal(scenario_map.road_boundaries[0], [[0., -1., 0.], [4., -1., 0.]])
-    assert scenario_map.unavailable_layers["traffic_controls.traffic_light"]
+    assert scenario_map.unavailable_layers == {
+        "traffic_controls.traffic_light": "This source has no traffic-light layer",
+    }
     with pytest.raises(ValueError, match="read-only"):
         scenario_map.drivable_area[0][0, 0] = 0.
     with pytest.raises(ValueError, match="at least 3"):
@@ -71,4 +73,6 @@ def test_scenario_map():
                 "traffic_controls.bogus"):
         with pytest.raises(ValueError, match="Unsupported unavailable-layer key"):
             ScenarioMap(unavailable_layers={key: "No evidence"})
-    assert ScenarioMap(unavailable_layers={"crosswalks.partial": "One polygon was unclosed"})
+    assert ScenarioMap(unavailable_layers={"crosswalks.partial": "One polygon was unclosed"}).unavailable_layers == {
+        "crosswalks.partial": "One polygon was unclosed",
+    }

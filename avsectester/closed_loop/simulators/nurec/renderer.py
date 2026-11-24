@@ -84,6 +84,32 @@ def _protobuf_pose(world_from_object: np.ndarray) -> Any:
     )
 
 
+def _compose_pose(a, b, pb):
+    """SE(3) compose two protobuf poses: ``a @ b``. AlpaSim builds the camera's world pose as
+    ``world_rig @ rig_to_camera`` (rig_to_camera = the camera's pose in the rig)."""
+    aw, ax, ay, az = a.quat.w, a.quat.x, a.quat.y, a.quat.z
+    bw, bx, by, bz = b.quat.w, b.quat.x, b.quat.y, b.quat.z
+    q = pb.Quat(  # quaternion product a*b
+        w=aw * bw - ax * bx - ay * by - az * bz,
+        x=aw * bx + ax * bw + ay * bz - az * by,
+        y=aw * by - ax * bz + ay * bw + az * bx,
+        z=aw * bz + ax * by - ay * bx + az * bw,
+    )
+    tx, ty, tz = (
+        b.vec.x,
+        b.vec.y,
+        b.vec.z,
+    )  # rotate b's translation by a's rotation: v + 2w(q×v)+2(q×(q×v))
+    cx, cy, cz = ay * tz - az * ty, az * tx - ax * tz, ax * ty - ay * tx
+    ccx, ccy, ccz = ay * cz - az * cy, az * cx - ax * cz, ax * cy - ay * cx
+    vec = pb.Vec3(
+        x=a.vec.x + tx + 2 * (aw * cx + ccx),
+        y=a.vec.y + ty + 2 * (aw * cy + ccy),
+        z=a.vec.z + tz + 2 * (aw * cz + ccz),
+    )
+    return pb.Pose(vec=vec, quat=q)
+
+
 def ftheta_camera_from_spec(spec: Any) -> FThetaCamera:
     """Build an f-theta lens from a NuRec CameraSpec, including its windshield distortion.
 
@@ -208,8 +234,8 @@ class Renderer(ABC):
         Scene content less than about ``occlusion_tolerance_m`` in front of an object does not
         hide it.
         """
-        raise NotImplementedError(f"{type(self).__name__} cannot render object visibility; "
-                                  "use object_occlusion='geometry'")
+        raise NotImplementedError(f"{type(self).__name__} cannot render object visibility. "
+                                  "Use object_occlusion='geometry'")
 
     def scene_object_tracks(
         self, objects: Sequence[PlacedObject],
@@ -540,7 +566,7 @@ class NuRecRenderer(Renderer):
 
         if self.asset_directory is None:
             raise ValueError("Rendered-probe occlusion requires NuRecRenderer.asset_directory, readable by "
-                             "the NRE server; or use object_occlusion='geometry'")
+                             "the NRE server. Alternatively, use object_occlusion='geometry'")
         require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
         cam_from_world = self.cam_from_world(world_from_rig, camera)
         camera_center = np.linalg.inv(cam_from_world)[:3, 3]
@@ -583,8 +609,8 @@ class NuRecRenderer(Renderer):
                          max(0, math.floor(x0) - 3):max(0, math.ceil(x1) + 3)] = True
         stray = int(np.count_nonzero(visible & ~expected))
         if stray > max(10, 0.02 * np.count_nonzero(visible)):
-            raise ValueError(f"{stray} NRE probe pixels fall outside the objects' projections; "
-                             "check track_padding_m and the NRE version")
+            raise ValueError(f"{stray} NRE probe pixels fall outside the objects' projections. "
+                             "Check track_padding_m and the NRE version")
         return visible
 
     def _parked_pose(self) -> np.ndarray:
@@ -795,8 +821,6 @@ class NuRecRenderer(Renderer):
         spec = self._camera_specs[camera]
 
         rig = _protobuf_pose(world_from_rig)
-        from .simulator import _compose_pose
-
         cam = _compose_pose(rig, self._camera_poses[camera], common_pb2)
         starts = dict(dynamic_objects if dynamic_objects_start is None else dynamic_objects_start)
         objects = []

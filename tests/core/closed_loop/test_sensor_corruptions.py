@@ -8,21 +8,19 @@ from avsectester.closed_loop.environment import SensorEnvironment
 from avsectester.data_types import Observation
 
 
-CORRUPTION_CASES = [
-    ("GaussianNoise", {}), ("Fog", {}), ("Rain", {}), ("Snow", {}),
-    ("Brightness", {}), ("LowLight", {}), ("Contrast", {}), ("Gamma", {}),
-    ("ColorTemp", {}), ("ShotNoise", {}), ("MotionBlur", {}), ("DefocusBlur", {}),
-    ("JPEGCompression", {}), ("ChromaticAberration", {}),
+CORRUPTIONS = [
+    "GaussianNoise", "Fog", "Rain", "Snow", "Brightness", "LowLight", "Contrast",
+    "Gamma", "ColorTemp", "ShotNoise", "MotionBlur", "DefocusBlur",
+    "JPEGCompression", "ChromaticAberration",
 ]
 
 
 @pytest.mark.parametrize("kind,options", [
-    *[pytest.param(kind, options, id=kind) for kind, options in CORRUPTION_CASES],
-    pytest.param("AlbumentationsCorruption", {"transform": "Fog"}, marks=pytest.mark.skipif(importlib.util.find_spec("albumentations") is None,
-                                             reason="albumentations is not installed"),
+    *[pytest.param(kind, {}, id=kind) for kind in CORRUPTIONS],
+    pytest.param("AlbumentationsCorruption", {"transform": "Fog"},
+                 marks=pytest.mark.skipif(importlib.util.find_spec("albumentations") is None,
+                                          reason="albumentations is not installed"),
                  id="AlbumentationsCorruption"),
-    pytest.param("avsectester.closed_loop.sensor_corruptions:Brightness", {},
-                 id="custom-corruption"),
 ])
 def test_sensor_corruption_contract(kind, options):
     image = np.random.default_rng(4).integers(25, 200, (40, 48, 3), dtype=np.uint8)

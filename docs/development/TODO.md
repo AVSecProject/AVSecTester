@@ -78,7 +78,8 @@ NuRec scene insertion includes LiDAR. See [Simulators](../guides/simulators.md#s
 - [ ] Establish the scope of localization attacks when CARLA/avstack perception uses physical
   sensor reference chains while tracking and planning use model-visible `vehicle_state`.
 
-See [physical and model-visible records](../reference/runtime.md#physical-and-model-visible-records).
+See the runtime reference for
+[physical and model-visible records](../reference/runtime.md#physical-and-model-visible-records).
 
 ## NuRec LiDAR simulation
 
@@ -89,16 +90,11 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 
 ## NuRec offline LiDAR sampling
 
-- [ ] Offline `session.render` at dataset frame 0 fails when NuRec collects LiDAR because the
-  scan needs a preceding recorded decision step. The stop-sign demo's `d_max` search includes
-  that frame, so configurations with LiDAR cannot complete its offline optimization.
+- [ ] Support offline LiDAR renders at the first dataset frame, including stop-sign selection.
 
 ## NuRec checkpoint restoration with active render hooks
 
-- [ ] With an activated `HookSet` session containing a `render.post` handler, restoring a NuRec
-  checkpoint after reset, checkpoint creation and a simulator step raises
-  `RuntimeError('Reset the simulator before requesting its state')`. This prevents
-  checkpoint-based reruns while those render hooks are active.
+- [ ] Restore NuRec checkpoints while a `render.post` hook is active.
 
 ## CARLA physical patches
 
@@ -130,15 +126,8 @@ See [NuRec LiDAR](../guides/simulators.md#lidar) for supported capture behavior.
 ## Apollo and Autoware driving systems
 
 - [ ] Supply an `AVStack` adapter for Baidu Apollo.
-- [x] Host Autoware in LiDAR mode on CARLA through native ROS 2.
 - [ ] Add Autoware camera fusion, including forwarding the required image topics.
 - [ ] Generate Autoware maps for additional CARLA towns.
-- [x] Evaluate repeated Autoware runs and the distribution of their outcomes.
-
-## Native ROS 2 sensor attacks
-
-- [x] Apply sensor attacks through a ROS 2 relay process that forwards the modified messages to
-  the topics subscribed to by the external driving system.
 
 ## Native ROS 2 runs after the origin
 

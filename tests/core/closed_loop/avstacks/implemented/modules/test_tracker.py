@@ -9,7 +9,7 @@ from avsectester.closed_loop.avstacks.implemented.modules.tracker import StopSig
 from avsectester.closed_loop.simulators.ego_dynamics import PlanarEgoState
 
 
-def test_update():
+def test_stop_sign_tracking():
     tracker = StopSignTracker()
     rng = np.random.default_rng(0)
     sign = np.array([40., 5.])
@@ -48,8 +48,15 @@ def test_association():
     tracker.update(state, camera, signs)
     assert len(tracker.tracks) == 2
 
+    tracker.reset()
+    aligned = [np.array([30., 0., 0.]), np.array([40., 0., 0.])]
+    for observations in (aligned, aligned[::-1]):
+        tracker.update(PlanarEgoState(), np.zeros(3), observations)
+        assert [track.track_id for track in tracker.tracks] == [0, 1]
+        np.testing.assert_allclose([track.position for track in tracker.tracks], [[30., 0.], [40., 0.]])
 
-def test_reset():
+
+def test_reset_stop_sign_tracking():
     tracker = StopSignTracker()
     tracker.update(PlanarEgoState(), np.zeros(3),
                    [np.array([40., 5., 0.]), np.array([40., 20., 0.])])
@@ -61,7 +68,6 @@ def test_reset():
 
 
 def test_stop_sign_tracker():
-    assert StopSignTracker().tracks == ()
     with pytest.raises(ValueError, match="positive"):
         StopSignTracker(range_sigma_fraction=0.)
     with pytest.raises(ValueError, match="positive"):

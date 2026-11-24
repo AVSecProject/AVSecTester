@@ -1,7 +1,7 @@
 """Navigation intentions derived from a scenario's map or recorded ego trajectory.
 
 Map routes follow AlpaSim's lane-consistency and centerline-extension rules. Navigation is
-recomputed from the actual ego pose; it never constrains the simulated vehicle's motion.
+recomputed from the actual ego pose and never constrains the simulated vehicle's motion.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class RouteGenerator:
     ``kind`` is ``map``, ``recorded`` or ``none``. ``recorded_points`` contains canonical-world
     positions in recording order. Map routes use only driving lanes, project the recording
     onto a consistent lane sequence and extend along the most aligned successor. Recorded
-    routes end at the recorded support. Short routes repeat their final point; disabled
+    routes end at the recorded support. Short routes repeat their final point. Disabled
     navigation returns ``None``. Each simulator runtime owns an independent instance.
     """
 
@@ -81,8 +81,8 @@ class RouteGenerator:
                 self._lanes = {identity: lane for identity, lane in scenario_map.lanes.items()
                                if lane.lane_type == "driving"}
             if not self._lanes:
-                raise ValueError("Map navigation requires an available map with driving lanes; "
-                                 "choose route_generator='recorded' or 'none'")
+                raise ValueError("Map navigation requires an available map with driving lanes. "
+                                 "Choose route_generator='recorded' or 'none'")
             points = self._map_points(points)
         kept = [points[0]]
         for point in points[1:]:

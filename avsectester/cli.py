@@ -192,7 +192,7 @@ def run(
         if phase == "services":
             typer.echo("Service startup interrupted.", err=True)
         elif phase == "evaluation":
-            typer.echo("Evaluation interrupted; report files may be incomplete. Saved run logs remain "
+            typer.echo("Evaluation interrupted. Report files may be incomplete. Saved run logs remain "
                        "available for evaluation.", err=True)
         else:
             typer.echo("Preparation or execution interrupted.", err=True)
@@ -240,7 +240,7 @@ def evaluate(
         report = _evaluate_result(result, configuration)
         _print_report(report, result, configuration)
     except KeyboardInterrupt:
-        typer.echo("Evaluation interrupted; report files may be incomplete. Saved run logs remain "
+        typer.echo("Evaluation interrupted. Report files may be incomplete. Saved run logs remain "
                    "available for evaluation.", err=True)
         typer.echo(f"Output directory: {configuration.runs.output}")
         raise typer.Exit(130) from None
@@ -289,8 +289,8 @@ def _start_service(command: list[str], *, name: str, service: str, timeout: floa
         typer.echo(shlex.join(command))
         return
     if shutil.which("docker") is None:
-        typer.echo(f"{service} startup error: Docker is not available on PATH; "
-                   "use --dry-run to print the command", err=True)
+        typer.echo(f"{service} startup error: Docker is not available on PATH. "
+                   "Use --dry-run to print the command", err=True)
         raise typer.Exit(1)
     try:
         if remove_exited_container(name):
@@ -318,11 +318,11 @@ def _stop_service(name: str, service: str) -> None:
 def nre_serve(
     config: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     gpu: str = typer.Option(..., help="Host GPU index passed to Docker --gpus device=N."),
-    name: str | None = typer.Option(None, help="Container name; default avsectester-nre-PORT."),
+    name: str | None = typer.Option(None, help="Container name. Default avsectester-nre-PORT."),
     image: str = typer.Option(DEFAULT_NRE_IMAGE),
     cache_size: int = typer.Option(2, min=1),
     timeout: float = typer.Option(600., min=0.001),
-    dry_run: bool = typer.Option(False, help="Only print the command; create no files or containers."),
+    dry_run: bool = typer.Option(False, help="Print the command without creating files or containers."),
 ) -> None:
     """Start the configured local NRE and wait for its Serving on log message."""
     try:
@@ -379,10 +379,10 @@ def trafficsim_serve(
     config: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     gpu: str = typer.Option(..., help="Host GPU index passed to Docker --gpus device=N."),
     models: Path = typer.Option(..., file_okay=False, help="Directory containing CATK weights and tokens."),
-    name: str | None = typer.Option(None, help="Container name; default avsectester-trafficsim-PORT."),
+    name: str | None = typer.Option(None, help="Container name. Default avsectester-trafficsim-PORT."),
     image: str = typer.Option(DEFAULT_TRAFFIC_IMAGE),
     timeout: float = typer.Option(600., min=0.001),
-    dry_run: bool = typer.Option(False, help="Only print the command; create no files or containers."),
+    dry_run: bool = typer.Option(False, help="Print the command without creating files or containers."),
 ) -> None:
     """Start CATK traffic and wait for its startup log and successful metadata RPC."""
     from avsectester.closed_loop.simulators.nurec.server import (

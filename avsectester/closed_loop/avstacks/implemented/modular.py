@@ -1,8 +1,7 @@
-"""ModularAVStack — an AVStack backed by an avstack ``ModularDrivingPipeline``.
+"""Driving system backed by an avstack ``ModularDrivingPipeline``.
 
-The modular (white-box) AVStack: perception -> tracking -> planning -> control, built from config.
-Heavy avstack imports are lazy (done when the pipeline is built), so this module — and the
-``avsectester.closed_loop.avstacks`` package — imports without avstack, matching `AlpamayoAVStack`.
+Constructs perception, tracking, planning and control components from configuration.
+Imports avstack when building the native pipeline. The module can be imported without avstack.
 """
 
 from __future__ import annotations
@@ -321,7 +320,7 @@ def modular_driving_adapter(factory, *, components=(), scorers=()):
 
 
 def _remove_hook(hooks: list, target: Any) -> None:
-    """Remove our own hook without disturbing hooks installed by the caller."""
+    """Remove the specified native hook and preserve the others."""
     hooks[:] = [hook for hook in hooks if hook is not target]
 
 

@@ -2,16 +2,16 @@
 
 Four orthogonal axes separate the algorithm (``GradientOptimizer``), threat model
 (``Perturbation``), scoring model (``Scorer``) and goal (``OptimizationObjective``). Algorithms
-own iteration and updates; perturbations own projection and physical realization. Lower objective
+own iteration and updates. Perturbations own projection and physical realization. Lower objective
 loss means a more successful attack.
 
 ``DataSource[index]`` yields one ``AdversarialSample``. ``Perturbation.apply`` forms one adversarial
-input; ``Scorer.target_scores`` evaluates a batch and ``OptimizationObjective.loss`` preserves its
+input. ``Scorer.target_scores`` evaluates a batch and ``OptimizationObjective.loss`` preserves its
 shape. Differentiable image batches are BCHW float RGB tensors in [0, 1]. Other scorers declare
 their representation and return one score per input, including physical quantities such as meters.
 
 This interface depends only on NumPy, the standard library and framework data records. Torch is
-loaded lazily through implementation modules; importing the contracts does not import torch.
+loaded lazily through implementation modules. Importing the contracts does not import torch.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import numpy as np
 
 import avsectester.data_types as data_types
 
-Tensor = Any  # torch.Tensor at runtime; kept abstract so the contract imports without torch
+Tensor = Any  # torch.Tensor at runtime. Kept abstract so the contract imports without torch
 
 
 @dataclass
@@ -57,8 +57,8 @@ class DataSource(ABC):
 class Perturbation(ABC):
     """A threat model: the adversarial variable δ, how it enters the input, and its feasible set.
 
-    The Lp ball / [0,1] box / patch mask are the threat model's concern (``project``), NOT the
-    algorithm's — which is exactly why the same ``GradientOptimizer`` drives every threat model.
+    Define the feasible set in ``project``, such as an Lp ball, a box of pixel values in
+    [0, 1] or a patch mask. The optimizer calls this method to constrain each update.
     """
 
     @abstractmethod
@@ -93,7 +93,7 @@ class Scorer(ABC):
 
     Differentiable inputs are finite BCHW float RGB tensors in [0, 1], returning a (B,) tensor
     differentiable with respect to the images. Other formats use sequences of B inputs and
-    return B scores. Detector scores are confidences in [0, 1]; other scorers may return physical
+    return B scores. Detector scores are confidences in [0, 1]. Other scorers may return physical
     quantities such as distances.
     """
 
@@ -124,7 +124,7 @@ class HideBelowThreshold(OptimizationObjective):
     """Suppress a detection until its score is ``margin`` below the decision ``threshold``.
 
     ``loss = max(0, score - (threshold - margin))``. A detector reports the target when its
-    score reaches ``threshold``; samples already below ``threshold - margin`` contribute no loss or
+    score reaches ``threshold``. Samples already below ``threshold - margin`` contribute no loss or
     gradient, so updates concentrate on samples that would still be detected. The margin absorbs
     differences between optimization samples and deployment.
     """
@@ -157,15 +157,15 @@ class OptimizationResult:
 
     delta: Tensor  # the optimized adversarial variable
     export: np.ndarray | None  # physical realization (patch -> (Hp,Wp,4) uint8), else None
-    history: list[float]  # PGD epoch mean (entry i = epoch i+1); NES per-step loss
-    final_score: float  # final scorer output: PGD mean over all samples; NES on its fixed sample
+    history: list[float]  # PGD epoch means, or NES losses before and after updates
+    final_score: float  # final scorer output: PGD mean over all samples. NES on its fixed sample
 
 
 class GradientOptimizer(ABC):
     """Optimization algorithm over a data source, perturbation, scorer and objective.
 
     Implementations sample inputs, evaluate the objective and project candidate perturbations.
-    Gradient-based implementations require a differentiable scorer; sampling-based ones do not.
+    Gradient-based implementations require a differentiable scorer. Sampling-based ones do not.
     """
 
     @abstractmethod

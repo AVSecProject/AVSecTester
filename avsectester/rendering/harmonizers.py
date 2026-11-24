@@ -42,7 +42,7 @@ class Harmonizer(ABC):
     ) -> np.ndarray:
         """Adjust ``composite_rgb`` against ``background_rgb`` inside the H×W ``mask``.
 
-        Both images are aligned H×W×3 uint8 RGB. Nonzero mask pixels are visible; the
+        Both images are aligned H×W×3 uint8 RGB. Nonzero mask pixels are visible. The
         framework supplies a uint8 mask containing 0 or 255. Return H×W×3 uint8 RGB,
         preserving pixels outside the mask and the foreground texture's spatial structure.
         Do not modify the input images in place.
@@ -209,17 +209,19 @@ class ExposureHarmonizer(Harmonizer):
 
 
 class ClassicHarmonizer(Harmonizer):
-    """Reinhard color transfer (match the patch's Lab mean/std to the scene) + Poisson seamless blend.
+    """Match foreground colors to the surrounding scene without learned weights.
 
-    Reliable, in-process, no model weights; texture-preserving (Poisson keeps the patch's gradients
-    while shifting color/brightness to the background).
+    By default, color transfer matches the Lab mean and standard deviation, and Poisson
+    blending retains texture gradients while adapting color and brightness. This can dull
+    a meaningful hue, for example turning a red stop sign gray against gray asphalt.
+    Use ``preserve_chroma=True`` to keep Lab chroma and internal contrast during color
+    transfer. It scales lightness by the background-to-foreground mean ratio, clipped to
+    the dimensionless ``gain_range``. Use ``blend="feather"`` to preserve the transferred
+    colors while softening the boundary with a Gaussian alpha edge. ``feather`` is its
+    standard deviation in pixels.
 
-    Both steps pull the patch's *color* toward its surroundings, which suits a texture whose exact hue
-    does not matter but washes out objects whose color carries meaning (a red STOP sign turns grey-brown
-    on a grey road). For those, ``preserve_chroma=True`` instead scales only the Lab lightness by an
-    exposure gain (surrounding mean / object mean, clipped to ``gain_range``), keeping a/b and the
-    object's internal contrast; ``blend="feather"`` replaces the Poisson solve with a feathered alpha
-    edge, which keeps the object's own colors. Defaults reproduce the original behavior.
+    Set ``color_transfer=False`` to skip color matching or ``poisson=False`` to skip the
+    default Poisson blend.
     """
 
     def __init__(
@@ -275,17 +277,14 @@ class ClassicHarmonizer(Harmonizer):
 
 
 class PCTNetHarmonizer(Harmonizer):
-    """Learned harmonization via libcom's **PCTNet**, run **in-process**.
+    """Color harmonization with libcom's PCTNet.
 
-    PCTNet is a self-contained color-transform CNN needing only torch / torchvision / numpy / einops —
-    all compatible with the avstack stack (torch 2.1) — so we load just the ``pct_net`` module from
-    ``libcom_directory``, bypassing libcom's package ``__init__`` (which eagerly imports
-    diffusers-based models). PCTNet gives a milder, texture-preserving harmonization than the classic
-    Poisson blend — better for keeping an adversarial pattern intact. Falls back to
-    `ClassicHarmonizer` on any error (or set ``strict`` to raise instead).
-
-    ``libcom_directory`` is the repository root containing ``libcom/image_harmonization``.
-    ``device`` is a PyTorch device string; inference falls back to CPU when CUDA is unavailable.
+    Use the learned color transform when preserving internal texture is important.
+    ``libcom_directory`` is the checkout root containing ``libcom/image_harmonization``.
+    Inference runs in process on the PyTorch ``device``, with CPU fallback when CUDA is
+    unavailable. Supply a checkpoint path with ``weights`` or let the harmonizer use the
+    default PCTNet checkpoint, downloaded if absent. Errors fall back to
+    ``ClassicHarmonizer`` by default. With ``strict=True``, they raise ``RuntimeError``.
     """
 
     def __init__(
@@ -363,7 +362,7 @@ class PCTNetHarmonizer(Harmonizer):
             def _tm(a):
                 return torch.from_numpy(a).float().div(255)[None].to(self._dev)
 
-            with torch.no_grad():  # PCTNet.forward adds the batch dim itself; pass (C,H,W)
+            with torch.no_grad():  # PCTNet.forward adds the batch dim itself. Pass (C,H,W)
                 out = net(_t(img_lr), _t(img), _tm(mask_lr), _tm(m))
             res = torch.clamp(255.0 * out.squeeze(0).permute(1, 2, 0), 0, 255).cpu().numpy()
             log.info("harmonized frame with in-process PCTNet")

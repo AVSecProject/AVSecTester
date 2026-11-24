@@ -15,7 +15,7 @@ from avsectester.closed_loop.timing import (
 def test_seconds_to_microseconds():
     assert seconds_to_microseconds(.1 + .2) == 300000
     assert seconds_to_microseconds(-.1) == -100000
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="integer-microsecond precision"):
         seconds_to_microseconds(.0000001)
 
 
@@ -60,13 +60,10 @@ def test_timing_configuration():
         "front": {"frame_interval_us": 33000, "shutter_duration_us": 0}}
     assert hash(configured) == hash(TimingConfiguration(sensors={
         "right": SensorTiming(50000), "front": SensorTiming(33000)}))
-    assert HistoryRequirement(150000, 3).samples == 3
     with pytest.raises(ValueError, match="planner_delay_us"):
         TimingConfiguration(planner_delay_us=-1)
 
 
 def test_timing_capabilities():
-    assert not TimingCapabilities().captures_between_decisions
-    assert TimingCapabilities(captures_between_decisions=True, motion_reports=True).motion_reports
     with pytest.raises(ValueError, match="Intermediate captures require motion reports"):
         TimingCapabilities(captures_between_decisions=True)

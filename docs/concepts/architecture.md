@@ -69,11 +69,11 @@ Paths are relative to `avsectester/`.
 | `datasets/` | Stateless recordings and recipes |
 | `maps/` | Semantic records and map readers |
 | `rendering/` | Assets, surfaces, textures, harmonizers and composition |
-| `closed_loop/` | Hooks, environments and sensor corruptions |
+| `closed_loop/` | Hooks, environments, sensor corruptions, Docker lifecycle in `docker_containers.py` and clocks in `timing.py` |
 | `closed_loop/ros_interception/` | ROS declarations, socket transport, forwarding and observation processes, message conversion and pose projection |
 | `closed_loop/simulators/` | Contracts, recorded playback, dynamics, navigation, ground contact and object composition |
 | `closed_loop/simulators/messages.py` | Message-stage and relay transport contracts for simulators |
-| `closed_loop/simulators/carla/` | CARLA world and sensor integration, including physical snapshots and rig geometry |
+| `closed_loop/simulators/carla/` | CARLA world and sensor integration, including physical snapshots, rig geometry and hosted driving systems |
 | `closed_loop/simulators/nurec/` | NuRec rendering, `traffic.py` sessions and `server.py` local services |
 | `closed_loop/avstacks/` | Driving interfaces and `DrivingAdapter` |
 | `closed_loop/avstacks/implemented/` | Supplied driving systems, including `modules/` |
@@ -125,6 +125,7 @@ The supplied [configuration list](../examples/README.md) contains these combinat
 |---|---|---|
 | `CarlaDataset` | `CarlaSimulator` | `ModularAVStack` |
 | `CarlaDataset` | `CarlaSimulator` | `CameraForwardCollisionAVStack` |
+| `CarlaDataset` | `CarlaSimulator` | `ExternalAVStack` with `AutowareDrivingSystem` |
 | `NuRecDataset` | `NuRecSimulator` | `AlpamayoAVStack` |
 | `NuRecDataset` | `NuRecSimulator` | `RuleBasedAVStack` |
 | `NuScenesDataset` | `RecordedReplaySimulator` | `CameraForwardCollisionAVStack` |
@@ -152,3 +153,8 @@ Comparison groups are defined in [Terms](#terms).
 
 See [experiment workflows](../guides/experiments.md#treatments-and-common-origins) for resource
 scopes and [evaluation](../guides/evaluation.md) for grouping and measurements.
+
+## Next steps
+
+Follow [Experiments](../guides/experiments.md) to prepare and execute a comparison, or
+[Contributing](../development/contributing.md) to extend the framework.

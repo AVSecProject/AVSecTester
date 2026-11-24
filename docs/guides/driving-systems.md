@@ -19,7 +19,7 @@ Interfaces live in `avsectester.closed_loop.avstacks`. Supplied implementations 
 `ObservationPipeline` processes current input in this order:
 
 1. `sensors.post` hooks.
-2. `localization.pre` hooks and the configured localizer, when present.
+2. If a localizer is configured, `localization.pre` hooks followed by the localizer.
 3. `localization.post` hooks.
 4. `observation` hooks.
 
@@ -52,26 +52,24 @@ pose estimates through `observation.estimated_states()`. Convert measurements wi
 frame's pose and use the decision state for planning. See
 [delivery and coordinates](../reference/runtime.md#delivery-and-coordinates).
 
-`reset(observation)` receives the first input with its recorded context. Drivers cache the
+`reset(observation)` receives the first input with its recorded context. Driving systems cache the
 history they need. A sensor whose due frames were all dropped is missing for that decision.
-Supplied drivers do not fill a dropped input from their cache.
+Supplied driving systems leave dropped input absent.
 
 The runner calls `__call__` once per decision, or `ingest(observation)` when
-`skip_driver_during_force_gt` skips inference. Stateful drivers can retain input in `ingest`
+`skip_driver_during_force_gt` skips inference. Stateful driving systems can retain input in `ingest`
 without predicting. Do not ingest and call the same observation twice.
 
-## avstack modular pipeline (`ModularAVStack`)
-
-The `*_modular_*` stop-sign configurations use `RuleBasedAVStack`, described below.
+## Modular avstack pipeline
 
 `ModularAVStack` wraps avstack's perception, tracking, planning and control pipeline. Each run
-gets fresh component histories. Native models and component outputs remain avstack objects.
-Before inference, each native sensor body reference uses that sensor's capture-time
-model-visible pose. Native payload timestamps remain acquisition timestamps. The current
-decision state separately reaches planning and control. Localization therefore affects perception
-in the frame the driver believes without moving physical truth. Recorded inputs retain their
-capture poses. When no new perception frame arrives, the native pipeline uses its latest
-retained frame with its original timestamp, while planning and control use the decision state.
+constructs its own stack and component histories. Native models and component outputs remain avstack
+objects. Before inference, each native sensor body reference uses that sensor's capture-time
+model-visible pose. Native payload timestamps remain acquisition timestamps. The current decision
+state separately reaches planning and control. Localization therefore affects perception in the
+frame the driving system uses without moving physical truth. Recorded inputs retain their capture
+poses. When no new perception frame arrives, the native pipeline uses its latest retained frame with
+its original timestamp, while planning and control use the decision state.
 
 `instrument` captures selected component outputs. `detections` converts supported perception
 boxes to the capture-time ego frame without another inference call. These ego-frame boxes do
@@ -91,14 +89,14 @@ Its learned model loads lazily and can be shared with bound scorers.
 
 `CameraForwardCollisionAVStack` exposes its scorer through `modular_driving_adapter`.
 
-This policy exposes 2D component diagnostics, not canonical 3D detections. `DetectionMetrics`
+This policy exposes 2D component diagnostics. `DetectionMetrics`
 requires a driving system that provides 3D detections. See [Evaluation](evaluation.md).
 
 ## NuRec rule-based driving system
 
 `RuleBasedAVStack` composes a `YOLOXDetector`, `StopSignTracker` and `RuleBasedPlanner`.
 It requires the selected camera's `CameraCalibration` and a planar ego state. Detection runs
-once per decision on the latest delivered camera. Stop-sign detections use known-size ranging
+when a newly delivered camera frame is available. Stop-sign detections use known-size ranging
 and bearing EKF tracking. Tracking uses the camera sample's pose and acquisition time, while
 planning uses the decision pose and clock. A decision without a new camera frame retains tracks
 without updating perception or tracking, then replans with the current decision state. LiDAR
@@ -107,150 +105,29 @@ Supplying a `VehicleTracker` also enables vehicle following, which additionally 
 selected LiDAR's `PointCloud` and `LidarCalibration`. With `vehicle_tracker: null`, vehicle
 detections are ignored and the stop-sign driving behavior is preserved.
 
-The cruise reference `v0` is `cruise_speed_mps`, or the speed at reset bounded below by
-`min_cruise_speed_mps` when cruise speed is omitted. The stop-sign tracker never deletes tracks,
-adds no process noise, and wraps bearing residuals across ±π. Stop signs facing another direction
-can still trigger a stop if they pass the route filters. `provides_detections=False` makes this
-stack incompatible with `DetectionMetrics`.
+The planner stops before relevant route-side signs, waits, then resumes cruise. A sign
+facing another approach can trigger a stop if it passes the route filters. With late
+detections, the vehicle can stop farther along the route than intended.
 
-The stack selects stop-sign boxes and confidence. Ranging uses the angular height of a
-box and the assumed sign height, then transforms the point from optical-camera coordinates into
-rig coordinates. Distance error scales with error in the assumed physical sign size.
-
-The tracker stores stationary signs in world coordinates. Range and bearing uncertainty
-determine association. Bearing-only EKF updates refine associated tracks. The planner identifies
-a target and served signs by track ID.
-
-The planner projects tracks onto the navigation route, filters signs outside its forward/lateral
-range, and places the stop target before a relevant sign. With no route it uses a straight
-route. Cruise acceleration is the IDM free-road term, `a_max * (1 - (v / v0) ** delta)`. Here
-`a_max` is `max_acceleration_mps2` and `delta` is `acceleration_exponent`.
-
-For a stop target at remaining route distance `d`, the required deceleration is `v² / (2d)`.
-Reaching `comfortable_deceleration_mps2` latches braking. The planner then follows that required
-deceleration and does not return to cruise for the same target. Acceleration is limited by the
-configured acceleration/deceleration bounds. Late detection can require more braking than
-available and can produce a stop beyond the target.
-
-After the speed and position criteria are met, the planner holds its stop for the configured
-duration, marks that track served, and resumes cruise. Reset clears tracking and planning state.
-The [Python API](../reference/python-api.md) lists defaults, parameter meanings and errors.
+The supplied modular stop-sign and vehicle insertion configurations use this driving system.
 
 ### Optional vehicle following
 
-Enable the tracker in the driving-system options:
+To enable following, start from the
+[vehicle insertion configuration](../../configs/nurec_vehicle_insertion_modular_2604.yaml).
+Its `vehicle_tracker` option enables following. Keep the detector and configure the NuRec
+renderer's LiDAR and the stack's matching `lidar_id`. The stack projects LiDAR points into
+the camera capture frame and tracks visible vehicle faces. It follows the nearest relevant
+vehicle and continues to stop for signs. Late detections, occlusion and limited braking can
+cause a collision. Recorded traffic follows its trajectories without responding to the ego
+vehicle and can hit it from behind. `DrivingMetrics.collision` records top-down contact or
+overlap of physical bounding boxes.
 
-```yaml
-avstack:
-  type: RuleBasedAVStack
-  options:
-    vehicle_tracker:
-      type: avsectester.closed_loop.avstacks.implemented.modules:VehicleTracker
-```
-
-Keep the detector options from the supplied configuration. `vehicle_labels` defaults to
-`[car, truck, bus]` and can select other detector class names. `lidar_id` defaults to
-`lidar_gt_top_p128`. The calibrated transform converts LiDAR points to its capture rig. When
-camera and LiDAR times differ, their capture-time model-visible poses move the points into the
-camera capture rig before projection.
-
-With following enabled, detection uses
-`min(detector.score_threshold, vehicle_tracker.low_score_threshold)` for that call.
-Stop signs still require `detector.score_threshold`. This remains the detector's configured
-threshold and the bound scorer's `decision_threshold`. With following disabled, detection uses
-the configured threshold and does not read LiDAR.
-
-`estimate_vehicle_face_points(box_xyxy, calibration, rig_points)` projects the rig-coordinate
-LiDAR points into the camera. It keeps points more than 0.5 m forward in camera coordinates,
-then selects the box's middle 80% horizontally and 10% to 60% vertically from its top.
-Horizontal distance to the camera defines a near cluster: points no farther than the 20th
-percentile plus 1 m. Both the selected region and this cluster require at least five points.
-Insufficient points raise `ValueError`, and the stack skips and counts that vehicle detection.
-
-The result is a `(3, 3)` rig-coordinate array in meters, ordered left, center and right, with
-`z = 0` as a horizontal representation. All three x coordinates use the near cluster's 10th
-percentile. Left and right y use its 95th and 5th percentiles, respectively. Center y is the
-midpoint of those two endpoints.
-
-`VehicleTracker.update(vehicle_state, t, face_points_rig, scores)` transforms each three-point
-measurement into horizontal world coordinates using ego's planar pose. Scores correspond
-one-to-one with measurements and must be finite in `[0, 1]`. Each track has a constant-velocity
-Kalman state `[x, y, vx, vy]`. Prediction uses white acceleration noise.
-The face midpoint supplies the position measurement, with isotropic standard deviation
-`max(min_measurement_noise_m, measurement_noise_fraction * horizontal_range)`.
-Here horizontal range is measured from the rig origin to the face midpoint.
-Initial position covariance uses that measurement variance. Initial velocity is zero, with
-standard deviation `initial_velocity_sigma_mps`.
-
-ByteTrack-style association has two stages. Measurements at or above `high_score_threshold`
-first associate with all retained tracks, including lost tracks. Measurements from
-`low_score_threshold` up to but excluding the high threshold then associate only with tracks
-matched in the previous update and still unmatched in the current update. Each stage greedily
-selects the smallest squared Mahalanobis innovation within `association_gate_chi2`, using each
-track and measurement once. Only unmatched high-score measurements create tracks.
-The score thresholds must satisfy `0 <= low_score_threshold <= high_score_threshold <= 1`.
-
-Associated tracks receive a Kalman update. `half_width_m` is half the measured visible face's
-lateral span. Unassociated tracks retain their predicted motion for re-association and are
-deleted after `max_missed_updates` consecutive misses. `tracks` returns independent snapshots
-only for tracks matched in the latest update and with at least `min_hits` measurements,
-counting initialization as the first hit. Lost tracks remain internal. Equal timestamps allow
-measurement updates without prediction. Backward timestamps are rejected. `reset()` clears
-the tracks and timestamp history.
-
-| Tracker option | Default |
-|---|---:|
-| `acceleration_noise_mps2` | 2 m/s² |
-| `min_measurement_noise_m` | 0.3 m |
-| `measurement_noise_fraction` | 0.05 |
-| `initial_velocity_sigma_mps` | 5 m/s |
-| `association_gate_chi2` | 9.21 |
-| `high_score_threshold` | 0.5 |
-| `low_score_threshold` | 0.1 |
-| `min_hits` | 2 |
-| `max_missed_updates` | 10 |
-
-The planner projects each vehicle onto the navigation route, with signed lateral offset
-positive to the left. The vehicle's lateral interval is its center offset plus or minus
-`half_width_m`. It is relevant when that interval overlaps the ego corridor
-`[-(ego_half_width_m + lateral_margin_m), +(ego_half_width_m + lateral_margin_m)]` and its
-forward arc distance is positive and within `vehicle_lookahead_m`. Touching interval edges
-counts as overlap. The nearest eligible vehicle ahead supplies the lead.
-The planner takes its velocity along the route tangent, bounded below by zero.
-The distance from ego's origin to that visible face is reduced by `ego_front_offset_m` to
-obtain the following gap `s`. The points represent the near side of the detected vehicle,
-so the planner does not subtract another vehicle half-length.
-
-Following uses the IDM interaction term:
-
-```text
-s_star = s0 + max(0, v*T + v*(v - v_lead)/(2*sqrt(a_max*b)))
-a_follow = a_max * (1 - (v/v0)**delta - (s_star/s)**2)
-```
-
-Here `v` is ego speed, `v0` the cruise reference, `v_lead` the lead speed and `delta` the existing
-acceleration exponent. `a_max` is `max_acceleration_mps2`, and `b` is
-`comfortable_deceleration_mps2`. A nonpositive gap requests maximum deceleration. Every forecast
-step uses the smaller of the sign/free-road acceleration and following acceleration, then
-applies the existing acceleration limits. The lead advances along the route at constant speed
-within the forecast. Timed stop-sign holds still keep ego stationary.
-
-| Planner option | Meaning | Default |
-|---|---|---:|
-| `vehicle_lookahead_m` | Maximum forward route distance of an eligible lead | 60 m |
-| `ego_half_width_m` | Half of ego's horizontal width | 1 m |
-| `lateral_margin_m` | Additional corridor width on each side | 0.3 m |
-| `min_gap_m` (`s0`) | Desired stationary following gap | 2 m |
-| `time_headway_s` (`T`) | Desired time headway | 1.5 s |
-| `ego_front_offset_m` | Distance from the rig origin to ego's front | 3.7 m |
-
-`min_gap_m` is a desired gap, not a guaranteed minimum clearance. A very close lead can cease
-to be detected. Without a matched lead, the planner resumes cruise unless a stop sign constrains
-it. Occlusion and truncated boxes can distort the estimated face position and width.
-NuRec LiDAR returns from scene-inserted assets have larger surface error near the ground. See
-[Scene insertion](simulators.md#scene-insertion). The system follows the centerline without lane
-changes. Limited braking and late detection can cause an overlap. Recorded non-reactive traffic
-can also hit ego from behind. `DrivingMetrics.collision` records physical box overlaps.
+The API reference gives the formulas and association rules for
+[ranging](../reference/python-api.md#avsectesterclosed_loopavstacksimplementedmodulesranging),
+[tracking](../reference/python-api.md#avsectesterclosed_loopavstacksimplementedmodulestracker),
+[planning](../reference/python-api.md#avsectesterclosed_loopavstacksimplementedmodulesplanner)
+and the [stack](../reference/python-api.md#avsectesterclosed_loopavstacksimplementedmodulesstack).
 
 ### Component outputs
 
@@ -279,7 +156,7 @@ that planned first-step acceleration is positive. Reset clears both trackers and
 acceleration and navigation into a rig-frame trajectory. Navigation comes from
 `Observation.route`, which the simulator generates as route intent. It is independent of the
 executed future path. See [Navigation](simulators.md#navigation). By default it uses the four
-cameras of AlpaSim's Alpamayo 1.5 driver: front wide, front tele and both cross cameras. The
+cameras of AlpaSim's Alpamayo 1.5 policy: front wide, front tele and both cross cameras. The
 renderer must provide every listed camera.
 
 Component logs contain `policy`, `command`, `route_waypoints`, `navigation_command`,
@@ -318,9 +195,9 @@ and serialization.
 ## Components and scorers for offline work
 
 A `DrivingAdapter` binds reusable component/scorer declarations to a factory that creates fresh
-driving systems. Discovery reads static declarations and configured options without constructing
-a stack or loading model weights. Constructor injection belongs
-to [Configuration](../reference/configuration.md#driving-specification).
+driving systems. Discovery reads static declarations and configured options without constructing a
+stack or loading model weights. Select a binding with `avstack.bindings`. Constructor injection
+belongs to [Configuration](../reference/configuration.md#driving-specification).
 
 `rule_based_driving_adapter` exposes `rule_based.detection_confidence`. Its `sensor_id` comes
 from the configured `camera_id` or the stack default, and `decision_threshold` comes from
@@ -329,8 +206,8 @@ from the configured `camera_id` or the stack default, and `decision_threshold` c
 
 | Binding | Purpose |
 |---|---|
-| `modular_driving_adapter` | Modular perception components and bound image scorers |
-| `rule_based_driving_adapter` | The rule-based driver's detection-confidence scorer |
+| `modular_driving_adapter` | Modular perception components and the `mmdet.inference` and `mmdet.rpn_objectness` scorers |
+| `rule_based_driving_adapter` | Detection-confidence scoring for the rule-based system |
 | `alpamayo_driving_adapter` | Policy prediction from one observation containing delivered context |
 
 The Alpamayo binding uses the stack's option-dependent acquisition-history declaration,
@@ -345,6 +222,14 @@ Image and target batch lengths must agree.
 Scorers also declare objective direction, camera and decision threshold where applicable. A
 white-box attack can use the same detector as the driving system through its scorer binding.
 See [Optimization](optimization.md).
+
+## Hosted Autoware
+
+`ExternalAVStack` lets CARLA accept commands from a process outside the framework.
+`AutowareDrivingSystem` hosts that process for each closed-loop run. Configure it under
+`simulator.options.external_driving_system` and select `ExternalAVStack` as the driving
+system. Follow [Hosted Autoware](../examples/hosted-autoware.md) for the supplied comparison
+and [Simulators](simulators.md#hosted-external-driving-systems) for the lifecycle.
 
 ## Use a custom driving system
 

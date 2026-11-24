@@ -28,7 +28,7 @@ from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.geometry.lidars import LidarCalibration
 from avsectester.geometry.poses import interpolate_transform, validated_transform, validated_vector
 from avsectester.validation import require_nonnegative_number, require_positive_number
-from avsectester.data_types import ActorState, Control, Observation, WorldSnapshot
+from avsectester.data_types import ActorState, Control, Observation, Unavailable, WorldSnapshot
 
 from .depth import _actor_depth, _scene_raycaster, _ground_raycaster
 from .renderer import Renderer, planar_rig_pose
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
     from avsectester.closed_loop.hooks import CameraPoseRequest
     from avsectester.datasets.base import ScenarioStart
+    from avsectester.maps import ScenarioMap
     from avsectester.rendering import (
         CompositePlan, CompositeResult, MeshAsset, ObjectAsset, ObjectComposition, PlacedObject,
     )
@@ -88,9 +89,13 @@ class _MotionInterval:
     recorded_poses: tuple[np.ndarray, ...] = ()
 
 
+def _route_points(start: ScenarioStart | None) -> tuple[tuple[float, ...], ...]:
+    return () if start is None else tuple(tuple(state.pose[:3, 3]) for state in start.recorded_ego)
+
+
 def _route_generator(kind: str, start: ScenarioStart | None) -> RouteGenerator:
     """The navigation route of a run from ``start``, built from its complete recording and map."""
-    return RouteGenerator(kind, () if start is None else [state.pose[:3, 3] for state in start.recorded_ego],
+    return RouteGenerator(kind, _route_points(start),
                           None if start is None else start.scenario_map)
 
 
@@ -115,12 +120,12 @@ class NuRecSimulator(Simulator):
     reconstruction (``Renderer.render_scene_visibility``), so the reconstruction that produces
     the images also hides the objects. It needs no mesh. ``"geometry"`` estimates occlusion from
     the configured ``depth`` (mesh plus actor cuboids, or actor cuboids alone).
-    ``occlusion_tolerance_m`` (default 0.15 m) applies to both: the reconstruction hides an
-    object only when it lies more than about this distance in front of it. Reconstructed
-    Gaussians extend some centimeters in front of their surfaces, so an object placed on or just
-    in front of a reconstructed surface needs this margin to stay visible.
-    ``validate_start`` raises ``UnsupportedStartError`` when the configured navigation route
-    cannot be built from the start's recording and map. Each recording is checked once.
+    Both modes use the nonnegative ``occlusion_tolerance_m`` (default 0.15 m). Foreground
+    scene geometry within that margin can leave an inserted object visible. Use the margin
+    when placing an object on or near a reconstructed surface.
+
+    ``validate_start`` raises ``UnsupportedStartError`` when navigation cannot use the
+    recording and map. Route validation uses the full recording and map for each start.
     """
 
     dataset_kinds = ("NuRecDataset",)
@@ -146,11 +151,11 @@ class NuRecSimulator(Simulator):
         min_track_duration_s: float = 3.,
     ) -> None:
         if time_step is None:
-            raise ValueError("NuRec time_step is required; experiment configuration supplies dataset.time_step")
+            raise ValueError("NuRec time_step is required. Experiment configuration supplies dataset.time_step")
         require_positive_number(time_step, "time_step")
         self.time_step = float(time_step)
         if renderer is None:
-            raise TypeError("NuRecSimulator requires a renderer; configure NuRecRenderer")
+            raise TypeError("NuRecSimulator requires a renderer. Configure NuRecRenderer")
         if not isinstance(depth, str) or depth not in {"mesh", "none"}:
             raise ValueError("NuRec depth must be 'mesh' or 'none'")
         if physics_update_mode not in {"ego_only", "none"}:
@@ -187,7 +192,9 @@ class NuRecSimulator(Simulator):
             raise ValueError("NuRec decision periods must be whole multiples of the traffic step")
         self.traffic = traffic
         self.min_track_duration_s = min_track_duration_s
-        self._route_failures: dict[str, str | None] = {}
+        self._route_validation: tuple[
+            tuple[tuple[float, ...], ...], ScenarioMap | Unavailable, str | None,
+        ] | None = None
 
     def validate_start(self, start: ScenarioStart | None) -> None:
         if start is None:
@@ -201,15 +208,20 @@ class NuRecSimulator(Simulator):
                 "NuRec LiDAR requires 1 recorded decision step before the start")
         if self.route_generator == "none":
             return
-        # The route depends only on the complete recording and the map, not on the start frame.
-        # Within one configured simulator a scenario's recording and map are fixed.
-        if start.scenario_id not in self._route_failures:
+        points = _route_points(start)
+        previous = self._route_validation if self.route_generator == "map" else None
+        if previous is not None and previous[1] is start.scenario_map and previous[0] == points:
+            failure = previous[2]
+        else:
             try:
-                _route_generator(self.route_generator, start)
-                self._route_failures[start.scenario_id] = None
+                RouteGenerator(self.route_generator, points, start.scenario_map)
             except ValueError as error:
-                self._route_failures[start.scenario_id] = str(error)
-        failure = self._route_failures[start.scenario_id]
+                failure = str(error)
+            else:
+                failure = None
+            if self.route_generator == "map":
+                # Keep the last read-only map and recording positions across candidate frames.
+                self._route_validation = (points, start.scenario_map, failure)
         if failure is not None:
             raise UnsupportedStartError(f"Navigation route cannot be built: {failure}")
 
@@ -530,10 +542,10 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
             raise ValueError(f"Filtered NuRec track {actor_id!r} cannot be overridden")
         track = self._recorded_tracks.get(actor_id)
         if track is not None and not track["controllable"]:
-            raise ValueError(f"NRE cannot move parked NuRec track {actor_id!r}; it is baked into the background")
+            raise ValueError(f"NRE cannot move parked NuRec track {actor_id!r}. It is baked into the background")
         actors = self.state().actors
         if actor_id not in actors:
-            raise KeyError(f"Unknown NuRec actor {actor_id!r}; available: {sorted(actors)}")
+            raise KeyError(f"Unknown NuRec actor {actor_id!r}. Available: {sorted(actors)}")
         if not isinstance(state, ActorState):
             raise TypeError("NuRec actor state must be an ActorState")
         if state.velocity is None:
@@ -668,7 +680,7 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
                           is_endpoint: bool) -> None:
         session = self._traffic_session
         if session is None:
-            raise RuntimeError("AlpaSim traffic session is closed; reset the runtime before stepping")
+            raise RuntimeError("AlpaSim traffic session is closed. Reset the runtime before stepping")
         current = self._actors_at(timestamp_us)
         overrides = {identity: current[identity].box_transform()
                      for identity in self._actor_overrides if identity in session.track_ids}
@@ -1565,32 +1577,6 @@ class NuRecSimulatorRuntime(SimulatorRuntime):
         except BaseException:
             self._world_initialized = False
             raise
-
-
-def _compose_pose(a, b, pb):
-    """SE(3) compose two protobuf poses: ``a @ b``. AlpaSim builds the camera's world pose as
-    ``world_rig @ rig_to_camera`` (rig_to_camera = the camera's pose in the rig)."""
-    aw, ax, ay, az = a.quat.w, a.quat.x, a.quat.y, a.quat.z
-    bw, bx, by, bz = b.quat.w, b.quat.x, b.quat.y, b.quat.z
-    q = pb.Quat(  # quaternion product a*b
-        w=aw * bw - ax * bx - ay * by - az * bz,
-        x=aw * bx + ax * bw + ay * bz - az * by,
-        y=aw * by - ax * bz + ay * bw + az * bx,
-        z=aw * bz + ax * by - ay * bx + az * bw,
-    )
-    tx, ty, tz = (
-        b.vec.x,
-        b.vec.y,
-        b.vec.z,
-    )  # rotate b's translation by a's rotation: v + 2w(q×v)+2(q×(q×v))
-    cx, cy, cz = ay * tz - az * ty, az * tx - ax * tz, ax * ty - ay * tx
-    ccx, ccy, ccz = ay * cz - az * cy, az * cx - ax * cz, ax * cy - ay * cx
-    vec = pb.Vec3(
-        x=a.vec.x + tx + 2 * (aw * cx + ccx),
-        y=a.vec.y + ty + 2 * (aw * cy + ccy),
-        z=a.vec.z + tz + 2 * (aw * cz + ccz),
-    )
-    return pb.Pose(vec=vec, quat=q)
 
 
 __all__ = [

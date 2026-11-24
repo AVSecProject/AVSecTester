@@ -193,30 +193,33 @@ def test_candidate_hosts_order():
     assert [item.user_data["rank"] for item in right_first] == [0, 1]
 
 
-class CandidateInspectingPGD(PGD):
-    """Record the public map-style candidate dataset supplied by the attack."""
-
-    def run(self, data, perturbation, scorer, objective, **kwargs):
-        self.candidate_count = len(data)
-        self.candidate_positions = [data[index].context["frame"].position for index in range(len(data))]
-        with pytest.raises(IndexError):
-            data[len(data)]
-        return super().run(data, perturbation, scorer, objective, **kwargs)
-
-
 def test_offline_candidate_frames():
-    algorithm = CandidateInspectingPGD(epochs=1, batch_size=2)
-    descriptor = ScorerDescriptor("brightness", {"images": "BCHW float tensor [0,1]"},
-                                 {"scores": "scalar"}, {"scores": "tensor"}, ("images",))
-    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), scorers=[(
-        descriptor, lambda avstack, images, targets: images.mean(dim=(1, 2, 3)))])
+    targets = set()
+
+    def score(avstack, images, batch_targets):
+        targets.update(value.box for value in batch_targets)
+        return images.mean(dim=(1, 2, 3))
+
+    descriptor = ScorerDescriptor(
+        "brightness", {"images": "BCHW float tensor [0,1]"}, {"scores": "scalar"},
+        {"scores": "tensor"}, ("images",),
+    )
+    adapter = DrivingAdapter(lambda seed: ConstantAVStack(), scorers=[(descriptor, score)])
+    options = PatchOptimization(PGD(epochs=1, batch_size=2), scorer_id="brightness",
+                                size=(4, 4), device="cpu")
     attack = PatchAttack(decision_steps=3, max_windows=1, compositor=PatchCompositor(),
-                        optimization=PatchOptimization(algorithm, scorer_id="brightness",
-                            device="cpu", size=(4, 4), brightness=(1., 1.), contrast=(1., 1.)))
-    with ClosedLoopServices(MemoryDataset(), MemorySimulator(), adapter) as services:
-        metadata = attack.build_metadata(services.scenario("scene", seed=0))
-        attack.run_offline(OfflineContext(services, tuple(metadata)))
-    expected = [position for segment in metadata
-                for position in range(segment.start.position, segment.stop.position)]
-    assert algorithm.candidate_count == len(expected)
-    assert algorithm.candidate_positions == expected
+                        optimization=options)
+    dataset = MemoryDataset()
+    with ClosedLoopServices(dataset, MemorySimulator(), adapter) as services:
+        segment, = attack.build_metadata(services.scenario("scene", seed=0))
+        attack.run_offline(OfflineContext(services, (segment,)))
+        with services.session(0) as session:
+            frames = dataset.frames("scene")[:4]
+            boxes = []
+            for frame in frames:
+                view = session.render(RenderRequest("scene", frame, "front")).view
+                host = view.actors[segment.user_data["host"]]
+                boxes.append(project_box(
+                    view.camera, view.cam_from_world, host.box_transform(), host.extent))
+    assert len(set(boxes)) == 4
+    assert targets == set(boxes[:3])

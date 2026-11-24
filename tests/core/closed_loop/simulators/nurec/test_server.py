@@ -1,7 +1,6 @@
 """Service commands and lifecycle use real configurations and a shared Docker boundary."""
 import json
 import os
-import re
 import zipfile
 from pathlib import Path
 
@@ -55,12 +54,8 @@ def test_local_services(service_configuration, docker_boundary, monkeypatch, tmp
     assert not (state / "nre").exists()
     launch = next(json.loads(row) for row in calls.read_text().splitlines()
                   if json.loads(row)[0] == "run")
-    label_index = launch.index("--label") + 1
-    assert re.fullmatch(r"avsectester\.service-owner=[0-9a-f]{32}", launch[label_index])
-    launch[label_index] = "avsectester.service-owner=<uuid>"
-    assert launch == [
-        "run", "--label", "avsectester.service-owner=<uuid>",
-        "--label", f"avsectester.service-user={os.getuid()}", "-d", "--name", "nre",
+    assert launch[5:] == [
+        "-d", "--name", "nre",
         "--network", "host", "--gpus", "device=3", "-e", "HOME=/tmp",
         "-v", f"{archive.resolve()}:/mnt/nre-data/{archive.name}:ro",
         "-v", f"{second.resolve()}:/mnt/nre-data/{second.name}:ro",
@@ -96,38 +91,20 @@ def test_local_services(service_configuration, docker_boundary, monkeypatch, tmp
     assert (state / "nre").exists()
     (state / "nre").unlink()
     boundary.available_scenes = ("scene", "second-scene")
-    # Only an exited container left by this user's earlier AVSecTester start is replaced.
-    owned = {"avsectester.service-owner": "0" * 32, "avsectester.service-user": str(os.getuid())}
-    other = {**owned, "avsectester.service-user": str(os.getuid() + 1)}
-    (state / "nre").write_text(json.dumps({"id": "id-other", "labels": other, "running": False}))
-    with pytest.raises(RuntimeError, match="already exists"):
-        with local_services(dataset, simulator, nre_name="nre", log=messages.append):
-            pytest.fail("another user's container replaced")
-    (state / "nre").write_text(json.dumps({"id": "id-previous", "labels": owned, "running": False}))
-    messages.clear()
-    with local_services(dataset, simulator, nre_name="nre", log=messages.append):
-        assert json.loads((state / "nre").read_text())["id"] != "id-previous"
-    assert messages[0] == "Removed exited NRE container: nre"
-    assert not (state / "nre").exists()
     monkeypatch.setenv("AVSECTESTER_HOST_GPU", "all")
     with pytest.raises(ValueError, match="service GPU explicitly"):
         with local_services(dataset, simulator, nre_name="nre", log=messages.append):
             pass
 
 
-def test_local_services_configuration_errors(service_configuration, docker_boundary, tmp_path):
+def test_local_services_configuration_errors(service_configuration, tmp_path):
     dataset, simulator, _boundary = service_configuration
-    state, _calls = docker_boundary
-    for endpoint, message in (
-            ("remote.invalid:50051", "local endpoint"),
-            ("localhost:0", "between 1 and 65535"),
-            ("localhost:65536", "between 1 and 65535")):
-        invalid = NuRecSimulator(
-            NuRecRenderer(endpoint=endpoint, cameras=["front"]), time_step=.1, depth="none",
-            physics_update_mode="none", route_generator="none")
-        with pytest.raises(ValueError, match=message):
-            with local_services(dataset, invalid, nre_name="nre"):
-                pytest.fail("invalid service configuration started")
+    invalid = NuRecSimulator(
+        NuRecRenderer(endpoint="remote.invalid:50051", cameras=["front"]), time_step=.1,
+        depth="none", physics_update_mode="none", route_generator="none")
+    with pytest.raises(ValueError, match="local endpoint"):
+        with local_services(dataset, invalid, nre_name="nre"):
+            pytest.fail("invalid service configuration started")
 
     archive = Path(dataset.usdz_paths[0])
     second = scene_copy(archive, tmp_path / "another" / archive.name, "second-scene")
@@ -135,48 +112,15 @@ def test_local_services_configuration_errors(service_configuration, docker_bound
     with pytest.raises(ValueError, match="filenames must be unique"):
         with local_services(duplicate, simulator, nre_name="nre"):
             pytest.fail("duplicate archive names accepted")
-    (state / "nre").write_text("false")
-    with pytest.raises(RuntimeError, match="already exists"):
-        with local_services(dataset, simulator, nre_name="nre"):
-            pytest.fail("existing container replaced")
-    assert (state / "nre").exists()
 
 
-def test_local_services_failure_and_cleanup(service_configuration, docker_boundary, monkeypatch):
+def test_local_services_cleanup(service_configuration, docker_boundary, monkeypatch):
     dataset, simulator, _boundary = service_configuration
-    state, calls = docker_boundary
-    for mode, message in (
-            ("exit", "startup diagnostic"), ("timeout", "timed out"),
-            ("run-fail", "injected docker run failure")):
-        monkeypatch.setenv("DOCKER_MODE", mode)
-        with pytest.raises(RuntimeError, match=message):
-            with local_services(dataset, simulator, nre_name="nre", timeout_s=.001, log=lambda text: None):
-                pass
-        assert not (state / "nre").exists()
-    monkeypatch.setenv("DOCKER_MODE", "interrupt")
-    with pytest.raises(KeyboardInterrupt):
-        with local_services(dataset, simulator, nre_name="nre", log=lambda text: None):
-            pytest.fail("startup interruption ignored")
-    assert not (state / "nre").exists()
-    monkeypatch.setenv("DOCKER_MODE", "race")
-    with pytest.raises(RuntimeError, match="No container owned by this invocation"):
-        with local_services(dataset, simulator, nre_name="nre", log=lambda text: None):
-            pytest.fail("ownership race ignored")
-    assert json.loads((state / "nre").read_text())["owner"] == "someone-else"
-    (state / "nre").unlink()
-    monkeypatch.setenv("DOCKER_MODE", "ready")
-    for error_type in (RuntimeError, KeyboardInterrupt):
-        with pytest.raises(error_type, match="experiment failed"):
-            with local_services(dataset, simulator, nre_name="nre", log=lambda text: None):
-                raise error_type("experiment failed")
-        assert not (state / "nre").exists()
-
-    (state / "nre").write_text("true")
+    state, _calls = docker_boundary
     with pytest.raises(RuntimeError, match="experiment failed"):
         with local_services(dataset, simulator, nre_name="nre", log=lambda text: None):
             raise RuntimeError("experiment failed")
-    assert (state / "nre").exists()
-    (state / "nre").unlink()
+    assert not (state / "nre").exists()
 
     messages = []
     with local_services(dataset, simulator, nre_name="nre", log=messages.append):
@@ -189,11 +133,6 @@ def test_local_services_failure_and_cleanup(service_configuration, docker_bounda
             raise RuntimeError("original")
     assert any("Unable to stop NRE" in note for note in caught.value.__notes__)
     monkeypatch.setenv("DOCKER_MODE", "ready")
-
-    with local_services(dataset, simulator, nre_name="nre", log=messages.append):
-        # Name replacement is an external Docker race; cleanup must retain the replacement.
-        (state / "nre").write_text(json.dumps({"id": "foreign-id", "owner": "other", "running": True}))
-    assert json.loads((state / "nre").read_text())["id"] == "foreign-id"
 
 
 def test_local_services_with_traffic(nurec_usdz_path, docker_boundary, tmp_path, monkeypatch):

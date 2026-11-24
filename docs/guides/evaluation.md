@@ -41,14 +41,15 @@ measurements do not receive another difference operation.
 Independent sensor clocks can leave decision-boundary raw observations empty. Physical
 evidence uses each sensor's latest acquisition up to the decision, regardless of input hooks
 removing its data. This includes visibility, geometry and detection-matching truth.
-`StepRecord.physical_captures` identifies these acquisitions. `ReplicaVisibility` and the visible
-condition of `SignDetection` follow this rule.
+`StepRecord.physical_captures` identifies these acquisitions. The
+[stop-sign example](../examples/stop-sign-patch.md) uses this evidence for
+`ReplicaVisibility` and the visible condition of `SignDetection`.
 
 Model association uses the latest frame delivered to the driving system. A declared
 `detection_sensor` selects this source, and `StepRecord.detection_capture_id` retains its ID across
 decisions without new delivery. Decisions before its first delivery are excluded. A run where the
 sensor never delivers has unavailable detection evidence. An undeclared source uses decision-time
-truth. `DetectionMetrics` and `SignDetection` exclude decisions where force-GT skipped the driver.
+truth. `DetectionMetrics` and `SignDetection` exclude decisions where `force_gt` skipped inference.
 Driving metrics use physical decision states. `DrivingMetrics.brake_steps`, `StopImpact` and the
 supplied stop-sign black-box stop-command outcome exclude `force_gt` decisions.
 Commands absent because driving was skipped are not stop commands.
@@ -57,7 +58,7 @@ Commands absent because driving was skipped are not stop commands.
 |---|---|
 | `DrivingMetrics` | Physical speed, executed actuator braking, stopping, bounding-box distance and geometric collision with actors and inserted objects |
 | `TrajectoryDeviation` | Ego-position deviation at matched decision indices |
-| `DetectionMetrics` | Thresholded detection matching, precision, recall and F1 |
+| `DetectionMetrics` | Detection matching by distance, precision, recall and F1 |
 | `StopImpact` | Stopping and braking comparisons in both directions |
 | `StopLineMetrics` | Physical stopping, crossing and signed distance relative to the selected map stop line |
 | `ReasoningPhraseRate` | Case-insensitive phrase mentions in recorded reasoning text |
@@ -83,11 +84,11 @@ measurements are unavailable. Collision is bird's-eye oriented-box overlap, not 
 collision-sensor event. `TrajectoryDeviation` compares true ego positions at equal decision
 indices, without time or route alignment.
 
-`DetectionMetrics` matches detection positions to ground-truth box centres in the capture-time
+`DetectionMetrics` matches detection positions to ground-truth box centers in the capture-time
 ego frame, using sensor mounting geometry independently of model localization. It greedily
-pairs detections with the nearest centres within `match_distance`. Its range filtering is
-horizontal. Category matching follows `category_map` when configured. The thresholded detections
-do not define TN or AP/mAP.
+pairs detections with the nearest centers within `match_distance`. Its range filtering is
+horizontal. Category matching follows `category_map` when configured. The metric evaluates
+the supplied detections and reports TP, FP, FN, precision, recall and F1.
 
 `StopLineMetrics` uses `segment.user_data["stop_line_id"]` to identify a stop line in the
 saved map and assumes the run starts before it. It uses the initial physical state and each
@@ -142,12 +143,13 @@ true fractions for booleans. It is unavailable with a reason if either side lack
 means can use a different set of runs from the within-group differences. Statistics do not infer
 an attack-success label. See the [example interpretation rule](../examples/README.md#attack-impact).
 
-For each treatment, the **noise floor** measures every pair of completed repeats within the same
-part, segment and seed using the configured `PairMetric` implementations. `repeat_pairs` and
-`repeat_pair.csv` list the pair measurements. The same-treatment rows in `pair_summaries` and
-the HTML pair metric table show their distributions alongside the between-treatment results.
-Read outcomes of asynchronous driving systems alongside their within-treatment variation.
-The framework reports descriptive statistics without significance tests or confidence intervals.
+When repeats and pair metrics are configured, each treatment's **noise floor** measures every pair
+of completed repeats within the same part, segment and seed using the configured `PairMetric`
+implementations. `repeat_pairs` and `repeat_pair.csv` list the pair measurements. The same-treatment
+rows in `pair_summaries` and the HTML pair metric table show their distributions alongside the
+between-treatment results. Read outcomes of asynchronous driving systems alongside their
+within-treatment variation. The framework reports descriptive statistics without significance tests
+or confidence intervals.
 
 The HTML report presents experiment setup, metric definitions, run status, per-part results,
 paired differences and group details. Group details retain unavailable reasons and saved plots.
@@ -201,14 +203,15 @@ Saved runs reach metrics without sensor payloads, as described in
 [recording configuration](../reference/configuration.md#recording).
 
 See [Built-in metrics](#built-in-metrics) for acquisition truth, model associations and
-force-GT exclusions, and [Runtime](../reference/runtime.md#runlog) for stored records.
+`force_gt` exclusions, and [Runtime](../reference/runtime.md#runlog) for stored records.
 
 ## Visualize saved observations
 
 Retain the needed sensor payloads before execution using
 [recording configuration](../reference/configuration.md#recording). `camera_view` and
 `lidar_bev` read saved inputs. `labels_view` projects recorded true actors, while
-`detections_view` projects recorded detections. `sensor_view` reconstructs only logged geometry.
+`detections_view` projects recorded detections. The visualization module's
+`sensor_view(record)` reconstructs geometry from a saved record.
 
 The following example requires retained camera payloads in a saved run:
 
@@ -221,7 +224,7 @@ record_run(log, "export/frames", visualize=camera_view)
 save_gif(log, "export/drive.gif", fps=5)
 ```
 
-`record_run` exports frames, filmstrip creates a grid and `save_sequence` exports images and
+`record_run` exports frames, `filmstrip` creates a grid and `save_sequence` exports images and
 animation. These functions consume saved records and do not drive a world. Missing input
 produces no view. Overlays use only the recorded camera geometry. See the
 [visualization API](../reference/python-api.md#avsectesterevaluationvisualization)
@@ -256,10 +259,11 @@ assert report.notes == ["Existing in-memory log"]
 print(report.format_summary())
 ```
 
-Decision previews prefer recorded model images and otherwise use recorded raw images.
-A decision without an image payload has no image tile. Previews do not reconstruct a driver's cache.
-For frame-by-frame playback, select images from `RunLog.captures` and pass them to `save_gif`.
-`plot_group` shades force-GT intervals and plots executed actuator braking only outside them.
+The HTML report's decision previews prefer recorded model images and otherwise use recorded raw
+images. A decision without an image payload has no image tile. Previews do not reconstruct a driving
+system's cache. For frame-by-frame playback, select images from `RunLog.captures` and pass them to
+`save_gif`. `plot_group` shades `force_gt` intervals and plots executed actuator braking only
+outside them.
 
 ## Next steps
 

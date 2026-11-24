@@ -16,12 +16,12 @@ in [Simulators](../guides/simulators.md).
 
 `AttackRuntime.setup` receives its subscribed state and returns zero or more `WorldAttackAction`
 values. Actions register cleanup on the supplied `ExitStack`. See budget rules in
-[Writing attacks](../guides/attacks.md#online-phase).
+[Implement an attack](../guides/attacks.md#online-phase).
 
 Driving-history acquisition follows
 [Past observations](../guides/simulators.md#recorded-past-observations). The initialization
-event records `past_captures` and each historical observation's `t` and `vehicle_state` without
-sensor images.
+event includes the history count `past_captures` and `past_observations` with their `t` and
+`vehicle_state`.
 
 ## One decision
 
@@ -72,7 +72,8 @@ driving inference.
 `RunRequest.terminate_when` receives the completed decision before the runner writes it.
 The predicate runs under the decision handoff lock and returns true to end the run at that
 boundary. The runner stores a separate snapshot of the record with any `not_applied` message
-receipts added when the interval closes.
+receipts added when the interval closes. If feedback, termination or planning the next
+decision raises during handoff, the completed decision is saved before the run fails.
 
 `SimulatorRuntime.configure_timing` sets clocks before reset. `advance_interval` propagates one
 control interval and reports poses on `pose_reporting_interval_us`. `capture_at` reads scheduled
@@ -84,7 +85,7 @@ World actions returned by a decision apply at `simulator.step.pre`, before inter
 Their effects appear in later frames. `InsertObject` has zero setup ticks. Setup insertions are
 present in the first capture. Framework objects remain separate in `WorldSnapshot.objects`.
 
-### Moving inserted objects
+## Moving inserted objects
 
 `MoveObject` and `SimulatorRuntime.move_object` set the inserted object's pose at the end of
 the interval beginning at `simulator.step.pre`. Within the interval, translation is linear and
@@ -102,7 +103,7 @@ velocity. Objects inserted during a run are absent from the recorded history pre
 Offline rendering has no decision interval. Supply the object's pose for each requested frame
 with `InsertObject`.
 
-### Delivery and coordinates
+## Delivery and coordinates
 
 `Observation.t`, `vehicle_state`, `ego_speed` and `route` describe the decision timestamp.
 `deliveries[sensor_id]` contains this decision's newly ended frames, oldest first. Each
@@ -110,7 +111,7 @@ with `InsertObject`.
 and interpolated state estimate. `sensor_data` and `calibration` own the latest frame actually
 delivered in this decision. A dropped frame affects only itself. A sensor is absent if no frame
 for it was delivered. When every due frame of a sensor was dropped, `deliveries[sensor_id]` is
-an empty tuple, so drivers can tell a dropped sensor from one with no frame due.
+an empty tuple, so driving systems can tell a dropped sensor from one with no frame due.
 
 `state_estimates` contains new localization results through the decision timestamp, oldest
 first. Read frames through `delivered(sensor_id)` and poses through `estimated_states()`.
@@ -129,7 +130,7 @@ Raw-only recording can retain a sensor removed from model input.
 [Recorded input history](../guides/driving-systems.md#recorded-input-history) for the complete
 `HistoryRequirement` contract. There is no separate history argument.
 
-### Planner delay and recorded motion
+## Planner delay and recorded motion
 
 `planner_delay_us` uses AlpaSim's delay-buffer selection. Add each reference with its decision
 timestamp. Remove the oldest reference while a second reference is old enough for the delay,
@@ -140,42 +141,42 @@ before it has aged by the delay. Delay does not introduce a recorded-motion star
 Trajectory coordinates retain their generation-time rig frame and timestamps. The controller
 resolves them against its ego trajectory. Actuator commands have no spatial frame.
 
-When both simulator and driving system declare no command modes, the driver returns `None`.
-This bypasses the delay buffer and records both produced and executed commands as `None`.
-CARLA native ROS 2 control records the server's applied control in `telemetry.ego_control`.
-Managed Autoware records the latest mode, route, localization and MRM state in
-`telemetry.external_driving_system`. Initialization records the readiness timeline.
-Termination records engagement and arrival times and paths to the session logs.
-Metrics requiring executed commands, including `brake_steps`, are unavailable. See
+With an explicitly empty `command_modes` on the simulator and driving system, the driving system
+returns `None`. This bypasses the delay buffer and records both produced and executed commands as
+`None`. CARLA native ROS 2 control records the server's applied control in `telemetry.ego_control`.
+Hosted Autoware records the latest mode, route, localization and MRM state in
+`telemetry.external_driving_system`. Initialization records the readiness timeline. Termination
+records engagement and arrival times and paths to the session logs. Metrics requiring executed
+commands, including `brake_steps`, are unavailable. See
 [native ROS 2 control](../guides/simulators.md#native-ros-2-control).
 
 `force_gt_duration_us` configures recorded motion independently of planning delay. A decision
 is `force_gt` when its target timestamp belongs to the inclusive interval from the origin
-through the origin plus that duration.
+through the origin plus that duration. The target timestamp is the end of the control interval.
 
 Trajectory simulators enqueue a recorded reference and track it during `force_gt`.
-`StepRecord.executed_command` records that reference. Actuator simulators enqueue the driver's
-command but replay recorded world motion, so their `executed_command` is `None`. Skipping the
-driver produces empty `StepRecord.components` and `not_applied` receipts for actions whose
-stages did not run.
+`StepRecord.executed_command` records that reference. Actuator simulators enqueue the driving
+system's command but replay recorded world motion, so their `executed_command` is `None`. Skipping
+inference produces empty `StepRecord.components` and `not_applied` receipts for actions whose stages
+did not run.
 
-See [NuRec recorded motion](../guides/simulators.md#recorded-motion) for reference trajectories
-and physics blending, [scheduling constraints](configuration.md#scheduling) for driver skipping,
-[driver ingestion](../guides/driving-systems.md#recorded-input-history) for skipped inference,
-and [evaluation](../guides/evaluation.md#built-in-metrics) for decision exclusions.
+See [NuRec recorded motion](../guides/simulators.md#recorded-motion) for reference trajectories and
+physics blending, [scheduling constraints](configuration.md#scheduling) for inference skipping,
+[recorded input ingestion](../guides/driving-systems.md#recorded-input-history) for skipped
+inference, and [evaluation](../guides/evaluation.md#built-in-metrics) for decision exclusions.
 
-### CARLA tick pacing
+## CARLA tick pacing
 
-When pacing is enabled, each decision's `telemetry.pacing` lists the ticks in its completed
-interval in execution order. CARLA follows the official Autoware demo's cumulative schedule.
-Before a tick, it waits until the scheduled start. After the tick, it advances the schedule by
-one pacing interval and checks how far the run has fallen behind. Lags up to 50 ms can be
-recovered on subsequent ticks. A lag above 50 ms resets the scheduled start to the current time.
+In a CARLA closed-loop run with `realtime_factor` set, each decision's `telemetry.pacing` lists the
+ticks in its completed interval in execution order. CARLA follows the official Autoware demo's
+cumulative schedule. Before a tick, it waits until the scheduled start. After the tick, it advances
+the schedule by one pacing interval and checks how far the run has fallen behind. Lags up to 50 ms
+can be recovered on subsequent ticks. A lag above 50 ms resets the scheduled start to the current
+time.
 
 At the origin, paced runs move the process's tracked Python objects into the permanent garbage
-collection generation, so full collections during the run skip them. Closing the runtime
-unfreezes the whole permanent generation, including objects frozen before the run. This lets
-later runs in the same process reclaim objects that became unused.
+collection generation. Closing the runtime unfreezes the whole permanent generation, including
+objects frozen before the run.
 
 - `sleep_s` is the time spent waiting for the scheduled start.
 - `command_s` is the time spent sending the queued native commands.
@@ -189,18 +190,18 @@ later runs in the same process reclaim objects that became unused.
   The first sample counts collections from the start of pacing.
 - `full_collections` counts generation 2 collections completed in that interval.
 
-The initialization and termination events include `realtime` statistics from the first
-paced hold tick. They report `ticks`, `behind_ticks`, `resynchronizations`,
-`max_behind_schedule_s`, `elapsed_wall_s` and `actual_realtime_factor`. A tick counts toward
-`behind_ticks` when its `behind_schedule_s` is positive. The initialization statistics cover
-setup through the origin. The termination statistics include setup and execution, and
+The initialization event's `initialization_report.realtime` and the termination event's `realtime`
+contain statistics from the first paced hold tick. They report `ticks`, `behind_ticks`,
+`resynchronizations`, `max_behind_schedule_s`, `elapsed_wall_s` and `actual_realtime_factor`. A tick
+counts toward `behind_ticks` when its `behind_schedule_s` is positive. The initialization statistics
+cover setup through the origin. The termination statistics include setup and execution, and
 `realtime.post_origin` covers execution from the origin tick's return. Each group reports
-`world_tick_s`, `framework_s`, `command_s` and `gc_s` with `mean`, `p95` and `max` in seconds.
-These values are null when the group has no samples. `full_collections` is the sum for the group.
-The initialization event records `gc_preexisting_frozen_objects` immediately before the freeze
-and `gc_frozen_objects` immediately after it.
+`world_tick_s`, `framework_s`, `command_s` and `gc_s` with `mean`, `p95` and `max` in seconds. These
+values are null when the group has no samples. `full_collections` is the sum for the group. The
+initialization event records `gc_preexisting_frozen_objects` immediately before the freeze and
+`gc_frozen_objects` immediately after it.
 
-### Control visibility
+## Control visibility
 
 At a decision boundary, feedback for the preceding interval finishes before `control` is
 cleared. Input processing then sees `control=None`. Raw boundary rendering belongs to the
@@ -209,7 +210,7 @@ hooks, intermediate hooks and feedback see the actual controller reference. A ze
 run processes the origin through sensor environments, capture, localization and observation
 hooks without attack `step` or sensor actions.
 
-### Attack actions
+## Attack actions
 
 | Action | Boundary |
 |---|---|
@@ -226,7 +227,10 @@ If its sensor has no frame ending then, the action receives `not_applied` with r
 A positive duration applies at every due capture in `[issue_time, issue_time + duration)`.
 `None` lasts until the run ends.
 Each application has its own receipt. An action that expires or stops without encountering a due
-frame receives `not_applied`.
+frame receives `not_applied` with reason `no_frame_during_active_interval`. A queued world
+action whose application point was never reached receives
+`run_ended_before_point_of_action`. When recorded motion skips inference, unexecuted
+driving-system stages report `driving_system_skipped_during_force_gt`.
 No attack step is called at intermediate captures.
 `AVStackAttackAction` rejects `sensors.post`, which remains a normal hook stage. A requested
 `AVStack` stage not reached in that decision makes the decision fail. When some sensor had no
@@ -235,7 +239,7 @@ frame due in that decision, the action instead receives `not_applied` with reaso
 Action stages are checked when actions are issued. Hook stages and command modes are checked
 when each run starts.
 
-### Sensor views
+## Sensor views
 
 `SensorView.camera` and `cam_from_world` describe optical geometry when available. Optical axes
 are x right, y down, z forward. `sensor_from_world` describes the sensor body axes: x forward, y
@@ -251,7 +255,7 @@ Other captures have `composition=None`. `object_occlusion` is `geometry`, `rende
 `scene_render`. Scene insertion uses `occlusion_tolerance_m=0.0`. See
 [Simulators](../guides/simulators.md#inserted-world-objects) for insertion and visibility behavior.
 
-### LiDAR data
+## LiDAR data
 
 `PointCloud` stores a scan in the sensor coordinate frame at scan end. Its axes are x forward,
 y left and z up, with distances in meters. `Observation.sensor_data` stores the cloud and
@@ -287,7 +291,7 @@ class ShiftPointCloudAction(SensorAttackAction):
 
 Return it from `AttackRuntime.step`. The runner replaces the whole `PointCloud` payload.
 
-### CARLA LiDAR data
+## CARLA LiDAR data
 
 CARLA LiDAR keeps avstack's native format, which `ModularAVStack` passes to avstack unchanged.
 
@@ -330,8 +334,8 @@ Return it from `AttackRuntime.step`. The runner supplies its current capture and
 where `context` is a `StageContext`.
 Handlers execute in registration order and consume preceding replacements.
 At `sensors.post` and `localization.pre`, `sensor_data` contains only sensors due at that time.
-A handler targeting one sensor should leave batches without that sensor unchanged. Adapters declare
-their supported stages. Unsupported stages fail before reset.
+A handler targeting one sensor should leave batches without that sensor unchanged. Simulators
+and driving systems declare their additional stages. Unsupported stages fail before reset.
 
 | Stage | Value |
 |---|---|
@@ -356,8 +360,8 @@ explicitly registered avstack-library hook.
 
 ### ROS message stages
 
-Hosted drivers can use original ROS topic names as message stages. See
-[managed ROS topics](../guides/simulators.md#managed-ros-topics) for topic selection and startup
+Hosted driving systems can use original ROS topic names as message stages. See
+[hosted ROS topics](../guides/simulators.md#hosted-ros-topics) for topic selection and startup
 forwarding. After the final decision, the relay forwards messages on modifiable topics
 unchanged and counts all received messages.
 
@@ -368,7 +372,7 @@ sent the message. The runner checks processing and channel failures at each deci
 boundary and at run completion.
 
 For a modifiable message, processing saves the original value, applies any raw sensor
-actions, then runs the topic hooks and `AVStackAttackAction` handlers in stage order. A
+actions, then runs the registered topic hooks, followed by `AVStackAttackAction` handlers. A
 replacement must be a `RosMessage` of the same ROS type. Messages on modifiable topics use
 the same processing path during the run. The relay publishes the original serialized
 message when unchanged.
@@ -376,15 +380,22 @@ Hooks on observed topics can read and record the value. Each hook must return it
 Edits to that copy stay within the hook.
 
 A `RosMessage` contains its qualified ROS type and a mapping of fields. Nested messages use
-mappings and numerical sequences use NumPy arrays. `PointCloud2.data` is a structured array
-with the original point fields, offsets and data types. A modified cloud's dimensions and row
-stride are derived from this array. `OccupancyGrid.data` is an `int8` array matching the map
-dimensions.
+mappings. Numerical sequences use NumPy arrays, and boolean sequences use boolean arrays.
+A message sequence uses a structured NumPy array when its elements contain only fixed-length
+integer, floating-point or boolean fields, including fields of nested messages. ROS field
+names become array field names, and fixed-length arrays keep their shape. Sequences of
+messages with string, byte, character or variable-length fields remain lists of mappings.
+Replacement fields must keep their original representation and any structured dtype. Invalid
+replacements fail the run.
+
+`PointCloud2.data` is a structured array with the original point fields, offsets and data
+types. A modified cloud's dimensions and row stride are derived from this array.
+`OccupancyGrid.data` is an `int8` array matching the map dimensions.
 
 The active decision when processing starts supplies `StageContext.step`. The arrival time and
 `physical_state` come from the latest completed CARLA tick snapshot available to the thread.
 A raw sensor action receives the rig's sensor view placed using ego's pose in that snapshot.
-Use `record_output` to attach evidence to the owning decision. Message hooks cannot perform
+Use `record_output` to attach evidence to the owning decision. Message hooks must not perform
 world operations.
 
 A topic's `AVStackAttackAction` applies to every message processed while its decision is active.
@@ -398,12 +409,13 @@ See [RunLog](#runlog) for message timing and payload records.
 ## Contexts and lifecycle
 
 `OnlineContext` exposes `step`, `stage`, `sim_time`, `frame`, `decision_time_us`,
-`decision_period_us` and `force_gt`, with optional subscribed `observation` and
-`physical_state` snapshots. `force_gt` reports whether the decision follows recorded motion.
-The microsecond fields are set for decision callbacks. Setup and pre-run cleanup can leave them
-`None`. `record_output` writes named output during a run. The context carries no native runtime
-or time-advancing service.
-Bound `AVStackAttackAction` methods also receive the actual stage value.
+`decision_period_us` and `force_gt`, with optional subscribed `observation` and `physical_state`
+snapshots. `force_gt` reports whether the decision follows recorded motion. The stage is `setup`,
+`step`, `step.end` or `stop`. The `step.end` context uses the next boundary capture for
+completed-step evidence. The microsecond fields are set for decision callbacks. Setup and pre-run
+cleanup can leave them `None`. `record_output` writes named output during a run. The context carries
+no native runtime or time-advancing service. Bound `AVStackAttackAction` methods also receive the
+actual stage value.
 
 `StageContext` exposes `step`, `stage`, `sensor`, `physical_state`, `observation`, `control`, run
 resources, `rng` and `record_output`. `simulator_runtime` and `avstack` expose borrowed native
@@ -458,19 +470,19 @@ Payload retention defaults are defined in [Configuration reference](configuratio
 `detections`, `actions`, `outputs`, `sensor_geometry`, `object_visibility` and `telemetry`. Physical
 records retain framework object state. `executed_command_issue_time_us` identifies the actual
 command's production time. `force_gt` marks decisions whose physical motion follows the recording.
-`delivered_captures` maps sensors to the capture IDs delivered in that decision. Driving systems
-record the frames they actually use in `component_log`. `physical_captures` maps sensors to their
-latest physical acquisitions up to the decision, including frames removed by input hooks.
-`sensor_geometry` retains recorded cameras when any selected representation keeps them.
+`delivered_captures` maps sensors to the capture IDs delivered in that decision. Driving systems can
+report the frames they use in `component_log()`, stored under `components`. `physical_captures` maps
+sensors to their latest physical acquisitions up to the decision, including frames removed by input
+hooks. `sensor_geometry` retains recorded cameras when any selected representation keeps them.
 `object_visibility` covers the latest physical acquisitions independently of input hooks.
-`detection_sensor` names the detection source. `detection_capture_id` associates detections with
-its latest delivered frame across decisions. See
+`detection_sensor` names the detection source. `detection_capture_id` associates detections with its
+latest delivered frame across decisions. See
 [metric evidence](../guides/evaluation.md#built-in-metrics) for how metrics use capture IDs.
 
 `CaptureRecord` records a timestamp's due `sensor_ids`, `frame_ranges_us`,
 raw and final model observations, physical state, viewpoints and object visibility. Frame ranges
 store each sensor's half-open exposure or scan interval. Negative IDs identify recorded
-warmup captures, numbered chronologically from `-N` to `-1`. A `DeliveredAcquisition.capture_id` of
+history captures, numbered chronologically from `-N` to `-1`. A `DeliveredAcquisition.capture_id` of
 `None` means the acquisition was not produced by the scheduler. `RunLog.captures` and
 `read_table(..., stream="captures")` expose this stream separately from decisions.
 
@@ -605,9 +617,8 @@ recorder signatures are in the [Python API](python-api.md).
 
 ## Failures and cleanup
 
-Unsupported environments are rejected during validation. Unsupported hook stages and command
-modes fail each run at its start, producing exit 1. A failing decision stops
-attack runtimes, records unapplied actions and cleans run resources. If decision handoff raises
-an error, the runner writes the completed decision before raising the error. A requested
-action without an applied receipt is not evidence of an applied change. An incomplete log is
-not a completed run.
+Unsupported environments are rejected during validation. Unsupported hook stages and command modes
+fail each run at its start. A failing decision stops attack runtimes, records unapplied actions and
+cleans run resources. If decision handoff raises an error, the runner writes the completed decision
+before raising the error. A requested action without an applied receipt is not evidence of an
+applied change. An incomplete log is not a completed run.

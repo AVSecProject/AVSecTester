@@ -52,7 +52,7 @@ def _same_rotation(left: Quaternion, right: Quaternion) -> bool:
 
 @dataclass(frozen=True)
 class PoseDelta:
-    """Rigid displacement of a pose from one channel to its replacement."""
+    """Rigid displacement from an original pose to its replacement."""
 
     original: Pose
     replacement: Pose

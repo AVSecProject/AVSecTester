@@ -6,31 +6,25 @@
 >
 > **Prerequisites:** [Installation](../docs/getting-started/installation.md).
 
-Tests follow three layers. Each behavior belongs to its responsible layer. Higher layers check
-the public workflow rather than repeating lower-level numerical assertions.
+Each behavior belongs to its responsible layer. Higher layers check the public workflow without
+repeating lower-level numerical assertions.
 
 | Layer | Organization | Inputs |
 |---|---|---|
-| Framework core | One public method or feature per test | Real framework objects and shared memory components |
-| Components | One contract template per family and 1–3 unique behaviors per component | Real components and synthetic observations |
-| Numerical records and geometry | Public numerical functions and transport contracts | Tiny arrays, poses, rays and logs |
+| Framework core | One public method or feature | Real framework objects and memory fakes |
+| Components | Family contract and unique behaviors | Real components and synthetic inputs |
+| Numerical records and geometry | Numerical and transport contracts | Tiny arrays and records |
 
 ## Layout
 
 ```text
 tests/
   avstack/
-    fixtures/
-      curved_lanes.xodr
-      discontinuous_lanes.xodr
-      referenced_controls.xodr
-      straight_stop.xodr
     conftest.py
     test_carla_observation.py
     test_detector_configs.py
     test_modular.py
     test_native_records.py
-    test_opendrive.py
     test_phantom_injection_attack.py
   core/
     attack/
@@ -66,9 +60,16 @@ tests/
         test_avstacks.py
         test_base.py
         test_driving_adapter.py
+      ros_interception/
+        __init__.py
+        test_declaration.py
+        test_projection.py
+        test_ros_messages.py
+        test_transport.py
       simulators/
         carla/
           __init__.py
+          test_autoware.py
           test_conversions.py
           test_sensors.py
           test_simulator.py
@@ -81,19 +82,19 @@ tests/
           test_simulator.py
           test_traffic.py
         __init__.py
-        conftest.py
         test_base.py
         test_ego_dynamics.py
         test_ground_contact.py
+        test_messages.py
         test_navigation.py
         test_recorded.py
         test_simulators.py
+      test_docker_containers.py
       test_environment.py
       test_hooks.py
       test_sensor_corruptions.py
       test_timing.py
     datasets/
-      scenario_map_contract.py
       test_datasets.py
     evaluation/
       test_evaluator.py
@@ -120,7 +121,6 @@ tests/
       test_poses.py
       test_projection.py
     implemented_attacks/
-      conftest.py
       test_attack_success.py
       test_implemented_attacks.py
       test_object_insertion_attack.py
@@ -131,7 +131,13 @@ tests/
       test_stop_sign_patch_attack.py
       test_vehicle_insertion_attack.py
     maps/
+      fixtures/
+        curved_lanes.xodr
+        discontinuous_lanes.xodr
+        referenced_controls.xodr
+        straight_stop.xodr
       test_clipgt.py
+      test_opendrive.py
       test_scenario_map.py
     rendering/
       test_compositing.py
@@ -152,6 +158,7 @@ tests/
     test_docs.py
     test_public_api.py
     test_serialization.py
+    test_site.py
     test_type_paths.py
     test_validation.py
   live/
@@ -165,10 +172,14 @@ tests/
   fakes.py
 ```
 
-`tests/fakes.py` supplies shared memory components and external SDK, model, RPC and Docker
-boundaries. The root `tests/conftest.py` provides native `AVStack` fixtures and live-test opt-in
-settings. `tests/core/conftest.py` contains shared core records, camera fixtures and synthetic
-NuRec recordings. Component-specific fixtures stay beside their owning tests.
+- `core/` tests the framework and its components offline. Test cases that need optional SDKs skip
+  when those dependencies are absent.
+- `avstack/` tests the integration with native AVStack and CARLA Python objects.
+- `live/` tests local data, models and services when their prerequisites are available.
+
+`tests/fakes.py` supplies shared memory components and external boundaries. Fixtures with one
+owner stay beside that owner. Use `__init__.py` in test directories that need a package for
+shared imports or duplicate module names.
 
 ## Writing tests
 
@@ -186,17 +197,29 @@ repository. Commit only tests that follow the layers above:
 - Tests use public APIs. They do not inspect private state, count implementation calls, guard
   removed names, test the shared fakes or mock framework objects.
 - Only external boundaries are replaced: Docker, CARLA/avcarla, NuRec RPC, learned model weights,
-  AlpaSim model dependencies and GPU execution. Shared alternative `Dataset`, `Simulator` and
-  `AVStack` implementations live in `fakes.py` rather than being copied into individual
-  test files.
+  AlpaSim model dependencies, GPU execution and the wall clock. Shared alternative `Dataset`,
+  `Simulator` and `AVStack` implementations live in `fakes.py`.
 - Coverage, test counts and line counts are not targets.
 
 ## Prerequisites
 
-CPU builds of `torch` and `torchvision` satisfy the offline test prerequisites. CI installs
-both from the CPU index. Use the test and nurec extras for the core suite, including Embree for
-synthetic mesh depth and protobuf for rendered-probe requests. The supplied images provide their
-corresponding native dependencies.
+The supplied images include offline test dependencies. To reproduce CI's core environment in
+a virtual environment, run:
+
+```bash
+python -m pip install 'pip>=25,<26'
+python -m pip install torch==2.1.0 torchvision==0.16.0 \
+  --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[test,nurec]' -c constraints.txt
+```
+
+For the native job, initialize the AVStack checkouts and replace the last install command with:
+
+```bash
+python -m pip install -e '.[test,nurec]' -e third_party/avstack-core \
+  carla==0.9.16 pygame ipywidgets 'opencv-python<4.12' -c constraints.txt
+python -m pip install --no-deps -e third_party/avstack-api -e third_party/lib-avstack-carla
+```
 
 nuScenes tests require nuscenes-devkit and skip when it is absent, and avsectester:carla includes
 it. Native `AVStack` tests require the avstack checkouts and CARLA Python client. Detector
@@ -243,8 +266,8 @@ The [CI workflow](../.github/workflows/ci.yml) separates four jobs:
 
 | Job | Scope |
 |---|---|
-| core-tests | Core tests with CPU dependencies |
-| avstack-tests | All native avstack and core tests: `pytest tests/avstack tests/core` |
+| core-tests | Core tests with CPU dependencies and no native AVStack SDK |
+| avstack-tests | Native integration tests and core tests with the native SDK available |
 | runlog-python312 | `RunLog` tests in a Python 3.12 environment with pytest, numpy, pyarrow and pytest's transitive dependencies |
 | lint | Ruff and the configured mypy file set |
 
@@ -253,7 +276,7 @@ out of collection so the Python 3.12 job needs no driving models or simulator pa
 
 CI skips these tests because their optional components are not installed:
 
-- AlpaSim: traffic, controller and Alpamayo policy.
+- AlpaSim: traffic, controller, Alpamayo policy and NuRec cases using the AlpaSim protocol.
 - nuScenes: dataset, recorded playback and nuScenes insertion.
 - OpenMMLab: detector configuration, scorer and camera forward-collision.
 
@@ -267,7 +290,28 @@ python -m pytest tests/live -q
 
 Tests skip when their stated prerequisites are absent. Dataset-only checks require no
 simulator server. Environment paths must be visible inside the container. See
-[external data mounts](../docs/getting-started/installation.md).
+[external data mounts](../docs/getting-started/installation.md#repository-and-compose-settings).
+
+### ROS message conversion
+
+Run the ROS conversion tests from the checkout root with the pinned Autoware image already
+present locally. Tests that require real ROS message types skip in the CARLA and NuRec images.
+The Autoware tests need no GPU or simulator server.
+
+```bash
+image=ghcr.io/autowarefoundation/autoware
+image="$image@sha256:1db2988caa5dc5bae41548a8d556d0b57f55eb4dd63685426d94fd9c7a786034"
+docker run --rm --pull never --network none \
+  --mount "type=bind,src=$PWD,dst=/src,readonly" -e PYTHONPATH=/src \
+  --entrypoint bash "$image" -lc '
+    source /opt/autoware/setup.bash
+    cd /src
+    python3 -m pytest --confcutdir=tests/core/closed_loop/ros_interception \
+      -o cache_dir=/tmp/pytest-cache -q tests/core/closed_loop/ros_interception/test_ros_messages.py
+  '
+```
+
+`--confcutdir` skips parent `conftest.py` files that require framework dependencies.
 
 ### Real NuRec dataset
 
@@ -385,10 +429,12 @@ Check that ego moves, the patch is mounted, step telemetry contains CARLA's appl
 and the initialization and termination events include pacing statistics. A phantom configuration
 that modifies perception must be rejected during execution.
 
-For the managed Autoware smoke, follow [Managed Autoware](../docs/getting-started/installation.md#managed-autoware).
-Use a copy of the Town10HD configuration. During preparation, check that no Autoware container
-starts. Execute clean and relocation once from the prepared origin. Check the readiness timeline,
-mode and route telemetry, actor pose and action receipt, and container teardown.
+For the hosted Autoware smoke, follow
+[Hosted Autoware](../docs/getting-started/installation.md#hosted-autoware).
+Use a copy of `configs/carla_autoware.yaml` with `runs.repeats: 1`. During preparation, check
+that no Autoware container starts. Execute clean and relocation once from the prepared origin.
+Check the readiness timeline, mode and route telemetry, actor pose and action receipt, and
+container teardown.
 
 ## Next steps
 

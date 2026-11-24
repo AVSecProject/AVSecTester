@@ -62,14 +62,15 @@ uses path order. An explicit `usdz_paths` list supplies the archives directly. S
 identities are native clip identifiers rather than filesystem paths.
 
 Decision frames use the configured `time_step`. Ego and actor poses interpolate within recording
-support and do not extrapolate. An actor outside its recorded support is absent. Camera
+support and do not extrapolate. An actor outside its recorded support is absent. Tracks whose
+labels match a `vehicle_labels` entry use the `vehicle` category. Camera
 timestamps describe recorded image frames and are distinct from the decision timeline. Use
 `camera_timestamps` when aligning video labels and `camera_geometry` for the optical model and
 rig-from-camera transform.
 
-`FrameData.sensor_references` retains the native `camera_id`. Model-visible name changes belong
-to the [simulator's camera_aliases](simulators.md), not the dataset. `Dataset` camera and
-trajectory methods take `scenario_id`. Their signatures and calibration constraints are in the
+`ScenarioStart.payload` retains the native `camera_id`. Use the
+[simulator's camera_aliases](simulators.md#nurec) for model-visible names. `NuRecDataset` camera
+and trajectory methods take `scenario_id`. Their signatures and calibration constraints are in the
 [NuRec API](../reference/python-api.md#avsectesterdatasetsnurec).
 
 The public `read_scene_mesh` function reads world-coordinate mesh vertices and triangle faces
@@ -96,7 +97,7 @@ whether it can use that scenario.
 | `Dataset` | Map source |
 |---|---|
 | NuRec | Aligned clipgt geometry from the scene archive |
-| CARLA | Exported OpenDRIVE through the optional CARLA client package |
+| CARLA | Exported OpenDRIVE when `map_directory` is set, through the CARLA client package |
 | nuScenes | None |
 
 Maps contain lanes, drivable polygons, road boundaries, crosswalks, intersections, controls and
