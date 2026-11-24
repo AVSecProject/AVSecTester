@@ -79,6 +79,13 @@ def prepare_scenario(scenario: dict) -> dict:
                     sensor["source_ID"] = 0
                 if sensor.get("type") == "CarlaLidar" and sensor.get("noise_seed") is None:
                     sensor["noise_seed"] = int(rng.randint(2**31))
+        # Draw after all earlier choices so existing resolutions keep their values.
+        library = client.world.get_blueprint_library()
+        for spec in resolved["ego"].get("ros_rig", ()):
+            if library.find(spec["blueprint"]).has_attribute("noise_seed"):
+                attributes = spec.setdefault("blueprint_attributes", {})
+                if "noise_seed" not in attributes:
+                    attributes["noise_seed"] = int(rng.randint(2**31))
         resolved["npcs"] = actors[1:]
     finally:
         client.close()

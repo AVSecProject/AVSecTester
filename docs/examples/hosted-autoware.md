@@ -132,6 +132,21 @@ In-process links that bypass DDS are outside this interface.
 Modification is available for the [supported topics](../guides/simulators.md#hosted-ros-topics).
 Forwarding adds latency, so compare treatments with the same forwarding settings.
 
+## Add sensor noise
+
+The supplied sensors are noise-free. Sensor noise is part of the environment that every
+treatment shares, so set it in the recipe rather than in an attack. In your copy, add CARLA's
+noise attributes to the `blueprint_attributes` of the matching entry under
+`scenario.ego.ros_rig`. These keys add gyro and accelerometer noise to the `imu` entry:
+
+```yaml
+noise_gyro_stddev_z: 0.001
+noise_accel_stddev_x: 0.1
+```
+
+[ROS rig sensor noise](../reference/configuration.md#ros-rig-sensor-noise) lists the supported
+attributes, the GNSS limitation and how noise seeds are chosen.
+
 ## Next steps
 
 - [Hosted ROS topics](../guides/simulators.md#hosted-ros-topics) lists the supported topics.

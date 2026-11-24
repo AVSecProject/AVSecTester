@@ -674,7 +674,7 @@ def test_ros_rig_uses_native_attachments_and_ticks(monkeypatch, carla_dataset):
          "blueprint_attributes": {"ros_name": "sensor_kit_base_link"},
          "transform": transform, "ros": False},
         {"name": "lidar", "parent": "base", "blueprint": "sensor.lidar.ray_cast",
-         "blueprint_attributes": {"sensor_tick": .1, "ros_name": "lidar"},
+         "blueprint_attributes": {"sensor_tick": .1, "ros_name": "lidar", "noise_seed": 5},
          "transform": transform, "ros": True},
     ]
     dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
@@ -687,11 +687,47 @@ def test_ros_rig_uses_native_attachments_and_ticks(monkeypatch, carla_dataset):
         lidar = next(actor for actor in world.get_actors() if actor.type_id == "sensor.lidar.ray_cast")
         assert base.attached_to.id == ego.id and lidar.attached_to.id == base.id
         assert base.attributes["ros_name"] == "sensor_kit_base_link" and not base.ros_enabled
-        assert lidar.attributes == {"sensor_tick": "0.1", "ros_name": "lidar"}
+        assert lidar.attributes == {"sensor_tick": "0.1", "ros_name": "lidar", "noise_seed": "5"}
         assert lidar.ros_enabled and lidar.get_transform().location.z == 2.
         assert runtime.sensors == {"front"} and "lidar" not in runtime.observe().sensor_data
         assert runtime.replay_scenario["ego"]["ros_rig"] == rig
     assert world.destroyed_ids == [lidar.id, base.id, ego.id]
+
+
+def test_ros_rig_noise_seeds(monkeypatch, carla_dataset):
+    CarlaNativeBoundary().install(monkeypatch)
+    recipe = carla_dataset.native("scene")
+    scenario = deepcopy(recipe.scenario)
+    transform = {"location": {"x": 0., "y": 0., "z": 2.},
+                 "rotation": {"pitch": 0., "yaw": 0., "roll": 0.}}
+    scenario["ego"]["ros_rig"] = [
+        {"name": "base", "parent": "ego", "blueprint": "util.actor.empty",
+         "transform": transform, "ros": False},
+        {"name": "imu", "parent": "base", "blueprint": "sensor.other.imu",
+         "blueprint_attributes": {"noise_gyro_stddev_z": .01}, "transform": transform, "ros": True},
+        {"name": "gnss", "parent": "base", "blueprint": "sensor.other.autoware_gnss",
+         "blueprint_attributes": {"noise_seed": 7}, "transform": transform, "ros": True},
+    ]
+    dataset = CarlaDataset({"scene": replace(recipe, scenario=scenario)})
+    start = dataset.scenario_start("scene", dataset.frames("scene")[0])
+
+    def resolved_rig(seed):
+        with CarlaSimulator({"rate": 10}).create_runtime(seed=seed) as runtime:
+            runtime.reset(start)
+            imu = next(actor for actor in runtime.native["world"].get_actors()
+                       if actor.type_id == "sensor.other.imu")
+            rig = runtime.replay_scenario["ego"]["ros_rig"]
+            assert imu.attributes["noise_seed"] == str(rig[1]["blueprint_attributes"]["noise_seed"])
+            return rig
+
+    first = resolved_rig(3)
+    assert "blueprint_attributes" not in first[0]
+    assert first[1]["blueprint_attributes"]["noise_gyro_stddev_z"] == .01
+    assert first[2]["blueprint_attributes"]["noise_seed"] == 7
+    assert resolved_rig(3) == first
+    other = resolved_rig(4)
+    assert other[1]["blueprint_attributes"]["noise_seed"] != first[1]["blueprint_attributes"]["noise_seed"]
+    assert other[2]["blueprint_attributes"]["noise_seed"] == 7
 
 
 @pytest.fixture

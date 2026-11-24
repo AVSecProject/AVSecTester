@@ -1342,6 +1342,9 @@ class CarlaBlueprint:
         self.attributes[name] = str(value)
 
     def has_attribute(self, name):
+        if name.startswith("noise_"):
+            return self.id in {"sensor.lidar.ray_cast", "sensor.other.imu", "sensor.other.gnss",
+                               "sensor.other.autoware_gnss"}
         return name in {"role_name", "ros_name", "ros_topic_name", "ros2_ackermann_control",
                         "ros2_autoware_control", "post_process_profile", "image_size_x", "image_size_y",
                         "fov", "sensor_tick", "mass", "mesh_path"}
