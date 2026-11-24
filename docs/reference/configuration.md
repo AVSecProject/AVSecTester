@@ -334,6 +334,46 @@ ego:
 Set a camera's `post_process_profile` through its `blueprint_attributes` mapping. The framework
 does not choose a profile when the attribute is omitted.
 
+#### CARLA sensor noise
+
+CARLA adds sensor noise inside the simulator, before the framework or ROS receives the data.
+Enable it with native attributes in the `blueprint_attributes` of a recipe sensor or a `ros_rig`
+entry, so no forwarding is involved.
+
+| Blueprint | Noise attributes | CARLA default |
+|---|---|---|
+| `sensor.other.imu` | `noise_accel_stddev_{x,y,z}`, `noise_gyro_stddev_{x,y,z}`, `noise_gyro_bias_{x,y,z}` | No noise |
+| `sensor.other.gnss`, `sensor.other.autoware_gnss` | `noise_{lat,lon,alt}_{bias,stddev}` | No noise |
+| `sensor.lidar.ray_cast`, `sensor.lidar.hss_lidar` | `noise_stddev` and `dropoff_{general_rate,intensity_limit,zero_intensity}` | Dropoff enabled |
+| `sensor.other.v2x` | `noise_{lat,lon,alt,head,yawrate}_{bias,stddev}`, `noise_vel_stddev_x`, `noise_accel_stddev_{x,y,z}` | No noise |
+| `sensor.camera.dvs` | `sigma_{positive,negative}_threshold` | No noise |
+| `sensor.camera.rgb`, `sensor.camera.rgb_fisheye`, `sensor.camera.rt_lens` | None. `post_process_profile` determines the noise | The default profile adds noise |
+
+`sensor.other.radar` has `noise_seed` but no noise amount. Other sensors have no noise
+attributes.
+
+IMU accelerometer noise uses meters per second squared and gyro noise and bias use radians
+per second. GNSS latitude and longitude noise uses degrees and altitude noise uses meters. LiDAR
+`noise_stddev` is a range deviation in meters. Biases follow CARLA's sensor axes, and published
+ROS axes can reverse their sign.
+
+Camera noise follows auto exposure and has no seed. CARLA's
+[camera presets](https://github.com/carla-simulator/carla/blob/1.0/Docs/core_camera_presets.md)
+describe the noise of each profile.
+
+Preparation derives a missing `noise_seed` from the scenario seed for `ros_rig` entries whose
+blueprint has the attribute and for the `noise_seed` option of `CarlaLidar`. Other recipe
+sensors keep CARLA's default seed unless their `blueprint_attributes` set `noise_seed`.
+Treatments and repeats of one run seed share the derived seeds. Each value in `runs.seeds`
+derives different seeds. The `noise` option of avstack's `CarlaGnss` draws avstack's own noise
+from NumPy's global generator, which does not follow the run seed. Use the native attributes
+instead.
+
+The supplied hosted Autoware configuration sets the LiDAR dropoff rates to zero. The published
+IMU and GNSS covariances stay zero with noise enabled. `sensor.other.autoware_gnss` accepts its
+noise attributes, but its published pose does not change. To perturb GNSS, add
+`/sensing/gnss/pose_with_covariance` to `modified_topics` and change it with a hook.
+
 #### Hosted CARLA driving systems
 
 `scenario.ego_goal` supplies `x`, `y` and `yaw_deg` in the framework world frame. It uses meters
@@ -345,28 +385,7 @@ contains `location: {x, y, z}` and `rotation: {pitch, yaw, roll}` in native CARL
 relative to the parent. Use `blueprint_attributes` for native attributes, including
 `sensor_tick`, and `ros: true` to enable ROS publication.
 
-##### ROS rig sensor noise
-
-CARLA's own noise attributes add noise to `ros_rig` sensors before CARLA publishes their
-messages, so no forwarding is involved. Set them in the sensor's `blueprint_attributes`.
-
-| Blueprint | Noise attributes | CARLA default |
-|---|---|---|
-| `sensor.other.imu` | `noise_accel_stddev_{x,y,z}`, `noise_gyro_stddev_{x,y,z}`, `noise_gyro_bias_{x,y,z}` | No noise |
-| `sensor.lidar.ray_cast` | `noise_stddev` and `dropoff_{general_rate,intensity_limit,zero_intensity}` | Dropoff enabled |
-| `sensor.other.autoware_gnss` | `noise_{lat,lon,alt}_{bias,stddev}` | No noise |
-
-IMU accelerometer noise uses meters per second squared and gyro noise and bias use radians
-per second. LiDAR `noise_stddev` is a range deviation in meters. Biases follow CARLA's sensor
-axes, and the published ROS axes can reverse their sign. The supplied configuration sets the
-LiDAR dropoff rates to zero. The published IMU and GNSS covariances stay zero with noise
-enabled. `sensor.other.autoware_gnss` accepts its noise attributes, but its published pose
-does not change. To perturb GNSS, add `/sensing/gnss/pose_with_covariance` to
-`modified_topics` and change it with a hook.
-
-When a sensor's blueprint has `noise_seed` and the entry omits it, preparation derives the seed
-from the scenario seed, as for framework LiDAR sensors. Treatments and repeats of one run seed
-share the derived seed. Each value in `runs.seeds` derives different noise seeds.
+Use [CARLA sensor noise](#carla-sensor-noise) to add noise to `ros_rig` sensors.
 
 Configure `AutowareDrivingSystem` under `external_driving_system`:
 

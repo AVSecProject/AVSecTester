@@ -186,9 +186,10 @@ Forwarding adds latency, so compare treatments with the same forwarding settings
 
 ## Add sensor noise
 
-The supplied sensors are noise-free. Sensor noise is part of the environment that every treatment
-shares, so set it in the recipe rather than in an attack. In your copy, add CARLA's noise attributes
-to the `blueprint_attributes` of the matching entry under
+The supplied IMU, GNSS and LiDAR are noise-free, and camera noise follows each camera's
+post-process profile. Sensor noise is part of the environment that every treatment shares, so
+set it in the recipe rather than in an attack. In your copy, add CARLA's noise attributes to the
+`blueprint_attributes` of the matching entry under
 `dataset.options.recipes.town10hd_autoware.options.scenario.ego.ros_rig`. These keys add gyro and
 accelerometer noise to the `imu` entry:
 
@@ -197,7 +198,7 @@ noise_gyro_stddev_z: 0.001
 noise_accel_stddev_x: 0.1
 ```
 
-[ROS rig sensor noise](../reference/configuration.md#ros-rig-sensor-noise) lists the supported
+[CARLA sensor noise](../reference/configuration.md#carla-sensor-noise) lists the supported
 attributes, the GNSS limitation and how noise seeds are chosen.
 
 ## If a run fails

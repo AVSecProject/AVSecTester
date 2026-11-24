@@ -131,7 +131,7 @@ Framework actor-motion and physics changes are synchronized before each native t
 
 CARLA's post-process profile determines RGB exposure, tone mapping and sensor noise. The default
 profile adds noise to each frame, so detections near a threshold can produce different commands
-in repeated runs. See [Simulator configuration](../reference/configuration.md#simulator).
+in repeated runs. See [CARLA sensor noise](../reference/configuration.md#carla-sensor-noise).
 Before holding actors, `ground_settle_s` lets vehicles without prescribed trajectories settle
 with physics and gravity enabled and the handbrake applied. Their initial states retain the
 complete settled pose with zero velocity. Holding preserves that pose with gravity enabled.
