@@ -9,7 +9,6 @@ from avsectester.datasets import FrameReference
 from avsectester.datasets.nurec import NuRecDataset
 from avsectester.data_types import Control, WorldSnapshot
 from avsectester.runlog import RunLog, StepRecord
-from tests.fakes import actor_state
 
 
 @pytest.fixture
@@ -98,6 +97,10 @@ def make_object_in_front():
 
 @pytest.fixture
 def make_actor():
+    # The Python 3.12 RunLog job installs only recording dependencies, so collection must not
+    # import the shared fakes and their attack and rendering dependencies.
+    from tests.fakes import actor_state
+
     def actor(x=0., y=0., *, z=0., yaw=0., extent=(4., 2., 2.), category="car"):
         return actor_state((x, y, z), yaw=yaw, extent=extent, category=category)
     return actor

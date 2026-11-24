@@ -22,7 +22,7 @@ from the Attack interface to the execution services supplied to its user callbac
 native and model dependencies retain their lazy imports in the adapters that use them.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 'Framework package version.'
 
 

@@ -156,7 +156,7 @@ Adversarial testing for autonomous driving, organized by internal dependency lay
 
 | Name and signature | Meaning |
 |---|---|
-| `__version__ = "0.1.0"` | Framework package version. |
+| `__version__ = "0.2.0"` | Framework package version. |
 <!-- api:end -->
 
 ### avsectester.geometry
