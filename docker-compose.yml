@@ -4,12 +4,13 @@
 #   docker compose up -d --build       # start CARLA + the idle experiment shell
 #   docker compose exec carla-experiment avsectester run configs/carla_phantom.yaml   # the experiment
 #   docker compose exec carla-experiment bash                                       # open a shell
+# After adding ROS 2 settings to .env, start with the overlays in docs/getting-started/installation.md.
 #
 # Model links are created by the Dockerfile. Containers use the GPU selections from .env.
 services:
   carla-server:
     image: carlasim/carla:1.0@sha256:39681ed1eff895b6a813587285c51b687d7739ef8eeabcf51e38771d7b5b0263
-    command: bash CarlaUnreal.sh -RenderOffScreen -nosound -carla-rpc-port=2000 -carla-packs=/packs ${CARLA_SERVER_ARGS:-}
+    command: bash CarlaUnreal.sh -RenderOffScreen -nosound -carla-rpc-port=${CARLA_RPC_PORT:-2000} -carla-packs=/packs ${CARLA_SERVER_ARGS:-}
     shm_size: 2gb
     network_mode: host
     environment:
@@ -19,7 +20,7 @@ services:
 
   carla-experiment:
     build: {context: ., target: carla}
-    image: avsectester:carla
+    image: ${AVSECTESTER_IMAGE:-avsectester}:carla
     depends_on: [carla-server]
     network_mode: host
     user: "${AVSECTESTER_UID:?Run scripts/preparation/write_compose_env.sh}:${AVSECTESTER_GID:?Run scripts/preparation/write_compose_env.sh}"
@@ -39,7 +40,7 @@ services:
 
   nurec-experiment:
     profiles: [nurec]
-    image: avsectester:nurec
+    image: ${AVSECTESTER_IMAGE:-avsectester}:nurec
     build: {context: ., target: nurec}
     network_mode: host
     user: "${AVSECTESTER_UID:?Run scripts/preparation/write_compose_env.sh}:${AVSECTESTER_GID:?Run scripts/preparation/write_compose_env.sh}"

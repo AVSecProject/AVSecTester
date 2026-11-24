@@ -39,6 +39,7 @@ available workflows.
 |---|---|
 | Install images, weights and data | [Installation](docs/getting-started/installation.md) |
 | Run a supplied attack workflow | [Examples](docs/examples/README.md) |
+| Run CARLA with hosted Autoware | [Hosted Autoware](docs/examples/hosted-autoware.md) |
 | Understand terms and dependency layers | [Architecture](docs/concepts/architecture.md) |
 | Prepare, execute and resume | [Experiments](docs/guides/experiments.md) |
 | Write an attack | [Attacks](docs/guides/attacks.md) |

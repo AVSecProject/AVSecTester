@@ -71,9 +71,9 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 CMD ["bash"]
 
-# Optional CATK traffic service: build avsectester:nurec first, then extend that image.
+# Optional CATK traffic service, extending the nurec stage.
 #   docker build --target trafficsim -t avsectester:trafficsim .
-FROM avsectester:nurec AS trafficsim
+FROM nurec AS trafficsim
 
 WORKDIR /opt/alpasim
 RUN uv sync --inexact --python 3.12 --package alpasim_driver \

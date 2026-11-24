@@ -32,9 +32,11 @@ def test_write_compose_env(tmp_path):
     entries = dict(line.split("=", 1) for line in output.read_text().splitlines())
     assert entries == {
         "AVSECTESTER_ROOT": f"'{repository.resolve()}'", "AVSECTESTER_UID": str(os.getuid()),
+        "COMPOSE_PROJECT_NAME": f"avsectester-{os.getuid()}",
+        "AVSECTESTER_IMAGE": f"avsectester-{os.getuid()}",
         "AVSECTESTER_GID": str(os.getgid()), "DOCKER_GID": "996",
         "DOCKER_CLI": f"'{docker}'", "CARLA_SERVER_GPU": "0",
-        "CARLA_EXPERIMENT_GPU": "0", "NUREC_GPU": "0",
+        "CARLA_EXPERIMENT_GPU": "0", "NUREC_GPU": "0", "CARLA_RPC_PORT": "2000",
         "CARLA_SERVER_ARGS": "''",
     }
     assert first.stdout == output.read_text()

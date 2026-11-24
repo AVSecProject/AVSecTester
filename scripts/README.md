@@ -15,6 +15,9 @@
 -  [extract_carla_autoware_assets.sh](preparation/extract_carla_autoware_assets.sh) extracts and
   verifies assets from the local CARLA image. Follow
   [Hosted Autoware](../docs/getting-started/installation.md#hosted-autoware).
+-  [download_autoware_artifacts.py](preparation/download_autoware_artifacts.py) downloads and
+  verifies the Autoware model artifacts on the host. Follow
+  [Hosted Autoware](../docs/getting-started/installation.md#hosted-autoware).
 -  [fetch_models.sh](preparation/fetch_models.sh) downloads avstack's CARLA and
   nuScenes checkpoints.
 -  [export_carla_maps.py](preparation/export_carla_maps.py) exports OpenDRIVE maps. Follow

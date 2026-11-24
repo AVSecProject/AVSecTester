@@ -26,11 +26,13 @@ dotenv_path() {
 }
 {
   printf 'AVSECTESTER_ROOT=%s\n' "$(dotenv_path "$repo_root")"
+  # Per-user project and image names keep users of one Docker host apart.
+  printf 'COMPOSE_PROJECT_NAME=avsectester-%s\nAVSECTESTER_IMAGE=avsectester-%s\n' "$compose_uid" "$compose_uid"
   printf 'AVSECTESTER_UID=%s\n' "$compose_uid"
   printf 'AVSECTESTER_GID=%s\n' "$compose_gid"
   printf 'DOCKER_GID=%s\n' "$docker_gid"
   printf 'DOCKER_CLI=%s\n' "$(dotenv_path "$docker_cli")"
-  printf 'CARLA_SERVER_GPU=0\nCARLA_EXPERIMENT_GPU=0\nNUREC_GPU=0\n'
+  printf 'CARLA_SERVER_GPU=0\nCARLA_EXPERIMENT_GPU=0\nNUREC_GPU=0\nCARLA_RPC_PORT=2000\n'
   printf "CARLA_SERVER_ARGS=''\n"
 } > "$temporary"
 mv -- "$temporary" "$destination"

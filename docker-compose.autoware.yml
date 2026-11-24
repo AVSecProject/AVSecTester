@@ -1,4 +1,4 @@
-# Official camera profile for the managed Autoware sensor rig.
+# Official camera profile for the hosted Autoware sensor rig.
 # Run scripts/preparation/extract_carla_autoware_assets.sh first.
 services:
   carla-server:

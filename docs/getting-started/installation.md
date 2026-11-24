@@ -4,9 +4,14 @@
 >
 > **Outcome:** Prepare Compose services, data and model weights.
 >
-> **Prerequisites:** Linux, NVIDIA GPUs, Docker Compose and NVIDIA Container Toolkit.
+> **Prerequisites:** Linux, NVIDIA GPUs, git, Docker Compose usable without sudo through
+> `/var/run/docker.sock` and NVIDIA Container Toolkit. The ROS 2 scripts use `ip` and
+> `sha256sum`. Hosted Autoware also needs Python 3.11 or newer and curl on the host.
 
-Configure NVIDIA Container Toolkit as Docker's default runtime.
+Docker must use NVIDIA Container Toolkit as its default runtime. If
+`docker info --format '{{.DefaultRuntime}}'` prints `nvidia`, skip this step. Otherwise configure
+it as below. Restarting Docker stops every container on the host, so ask the administrator of a
+shared host instead.
 
 ```bash
 sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
@@ -28,16 +33,23 @@ scripts/preparation/write_compose_env.sh
 ```
 
 The script writes `.env` with the repository path, user/group IDs, Docker socket group, Docker
-executable and GPU selections. It refuses to overwrite an existing file unless --force is
-supplied. Choose available host GPUs in `.env`: `CARLA_SERVER_GPU`, `CARLA_EXPERIMENT_GPU` and
-`NUREC_GPU` each default to 0. `CARLA_SERVER_ARGS` defaults to an empty string and appends
-arguments to the CARLA server command.
+executable and GPU selections. It also names the Compose project and images after your user ID, so
+users of one Docker host do not stop each other's containers or replace each other's images. It
+refuses to overwrite an existing file unless --force is supplied. Before regenerating an older
+`.env`, stop its services with `docker compose down`. Choose available host GPUs in `.env`:
+`CARLA_SERVER_GPU`, `CARLA_EXPERIMENT_GPU` and `NUREC_GPU` each default to 0. `CARLA_RPC_PORT`
+defaults to 2000. `CARLA_SERVER_ARGS` defaults to an empty string and appends arguments to the CARLA
+server command. This command shows how much memory each GPU has in use:
+
+```bash
+nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
+```
 
 | Compose service | Image | Purpose |
 |---|---|---|
 | `carla-server` | carlasim/carla:1.0, pinned by digest in Compose | CARLA server |
-| `carla-experiment` | avsectester:carla | CARLA driving-system environment |
-| `nurec-experiment` | avsectester:nurec | NuRec, AlpaSim controller and Alpamayo environment |
+| `carla-experiment` | `AVSECTESTER_IMAGE:carla`, which the script sets to `avsectester-UID:carla` | CARLA driving-system environment |
+| `nurec-experiment` | `AVSECTESTER_IMAGE:nurec`, which the script sets to `avsectester-UID:nurec` | NuRec, AlpaSim controller and Alpamayo environment |
 
 The checkout is bind-mounted at its host absolute path. Experiments run as the configured user.
 Files written below the checkout are available on the host. Rebuild images after changing
@@ -73,14 +85,23 @@ Docker socket and CLI to start sibling containers.
 
 ### CARLA map packs
 
+Compose mounts `data/carla_content_packs` into the server. Create it before the first
+`docker compose up`. Otherwise Docker creates `data/` as root and later preparation scripts
+cannot write there. The server also starts with an empty directory.
+
+```bash
+mkdir -p data/carla_content_packs
+```
+
 `Town10HD_Opt` is included in the server image. `Town03_Opt` requires the matching
 [AdditionalMaps package](https://downloads.carlasim.com/Linux/AdditionalMaps_1.0.tar.gz).
-Extract the package into a directory outside the checkout, then link it for Compose:
+Extract the package into a directory outside the checkout, then link it for Compose in place of
+the empty directory:
 
 ```bash
 mkdir -p /srv/carla/maps
 tar xzf AdditionalMaps_1.0.tar.gz -C /srv/carla/maps
-mkdir -p data
+rmdir data/carla_content_packs
 ln -s /srv/carla/maps data/carla_content_packs
 ```
 
@@ -101,6 +122,8 @@ the mounted packs, while `data/carla_maps` contains exported OpenDRIVE files. Se
 ### Build and start CARLA
 
 Fetch the avstack CARLA and nuScenes perception checkpoints, then build the experiment image.
+Hosted Autoware does not use these checkpoints, and the image builds without them. On a shared
+host, choose free ports and GPUs as described after the commands before starting the server.
 
 ```bash
 scripts/preparation/fetch_models.sh
@@ -114,21 +137,31 @@ The image provides the native avstack and detector dependencies. Model files liv
 Dockerfile creates the corresponding links inside the image.
 The Python client wheel comes from the same pinned CARLA image as the server.
 
-CARLA uses host networking with RPC port 2000 and traffic-manager port 8000. Select the server
-and experiment host GPUs through `.env`. Model device indexes address GPUs visible in the
-experiment container. Stop the services with `docker compose down`.
+CARLA uses host networking. The server listens on `CARLA_RPC_PORT` and the next two ports. The
+traffic manager uses the configuration's `traffic_manager_port`, 8000 in the supplied files. On a
+shared host, choose ports that nobody else uses and set the same values as
+`simulator.options.client.connect_port` and `traffic_manager_port` in your configuration copy.
+For example, `ss -ltn | grep -E ':(2000|2001|2002|8000) '` prints nothing when the default
+ports are free. Select the server and experiment host GPUs through `.env`. Model device indexes
+address GPUs visible in the experiment container. Stop the services with `docker compose down`.
 
 ### Native ROS 2
 
-Choose an unused ROS domain ID. From the checkout, create the DDS network and profiles.
+Choose a ROS domain ID from 0 to 232 that no other user of the host uses. From the checkout,
+create the DDS network and profiles, replacing `DOMAIN` with that ID. The script needs the pinned
+CARLA image, which the earlier `docker compose up` pulled.
 
 ```bash
-scripts/preparation/setup_carla_ros2_network.sh 94
+scripts/preparation/setup_carla_ros2_network.sh DOMAIN
 ```
 
-Add the printed values to `.env`. They include `CARLA_SERVER_ARGS`, with
-`-ros2 -rmw=fastdds -ros-domain-id=N`, the Fast DDS profile path and its mount setting.
-Use the same domain in the external driving system. Start the ROS 2 services with the DDS overlay.
+The script prints three `.env` lines. Replace the existing `CARLA_SERVER_ARGS` line with the printed
+one, which contains `-ros2 -rmw=fastdds -ros-domain-id=DOMAIN`, and add the Fast DDS profile path
+and its mount setting. These server arguments then apply to every Compose start, so always start the
+server with the ROS 2 overlay below, and for hosted Autoware also with the Autoware overlay. `docker
+compose down` stops the services without the overlay files. Explicit `-f` files stop Compose from
+loading `docker-compose.override.yml`. Add `-f docker-compose.override.yml` when you use one. Use
+the same domain in the external driving system. Start the ROS 2 services with the DDS overlay.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ros2.yml up -d carla-experiment
@@ -161,20 +194,27 @@ Pull the pinned Autoware 1.9.0 image on the Docker host.
 docker pull ghcr.io/autowarefoundation/autoware@sha256:1db2988caa5dc5bae41548a8d556d0b57f55eb4dd63685426d94fd9c7a786034
 ```
 
-The official model installer is in the CARLA 1.0 integration. The CARLA image pinned in Compose
-contains the package at `/workspace`. To obtain the installer on the host, copy the Autoware
-integration directory from that image.
+Download the Autoware 1.9.0 model artifacts into a model data directory outside the checkout. Choose
+a directory you own that is not a symbolic link, for example `$HOME/autoware_data`. Compose needs no
+mount for it, because the Docker daemon mounts it into each Autoware container. Run the script on
+the host with Python 3.11 or newer and curl, replacing `AUTOWARE_DATA` with the directory.
 
 ```bash
-carla_image=carlasim/carla:1.0@sha256:39681ed1eff895b6a813587285c51b687d7739ef8eeabcf51e38771d7b5b0263
-carla_container=$(docker create "$carla_image")
-docker cp "$carla_container:/workspace/PythonAPI/examples/av_stacks/autoware" ./carla-autoware
-docker rm "$carla_container"
-(cd carla-autoware && ./install/install_autoware.sh --docker --distro jazzy --version 1.9.0)
+python3 scripts/preparation/download_autoware_artifacts.py --data-dir AUTOWARE_DATA
 ```
 
-Point `autoware_data_directory` at the host directory containing `ml_models`. Autoware writes
-TensorRT caches there as root. The framework uses the locally available image.
+The script follows Autoware's
+[artifacts list](https://github.com/autowarefoundation/autoware/blob/1.9.0/ansible/roles/artifacts/tasks/main.yaml)
+and a pinned CenterPoint release, writes them below `AUTOWARE_DATA/ml_models` and checks every
+file. The download takes several gigabytes. Run it again to retry failed files, continue files
+interrupted by a timeout or verify existing files.
+
+Later, set `autoware_data_directory` in your configuration copy to the absolute host path that
+`realpath AUTOWARE_DATA` prints. The experiment service does not expand `$HOME`, and `~` there
+means `/tmp`. Autoware writes
+TensorRT caches there as root, so those files stay owned by root. The first launch builds these
+engines, which can take several minutes. The framework runs the pinned image from the local Docker
+host.
 
 Follow [Native ROS 2](#native-ros-2) to set up the network and domain. Extract the official
 Autoware assets and ROS camera profile from the checkout.
@@ -185,7 +225,8 @@ scripts/preparation/extract_carla_autoware_assets.sh
 
 Keep the assets, DDS profiles and per-run work directory under the checkout. The experiment
 process and Docker host need matching paths. When starting the hosted services, add the Autoware
-overlay, which mounts the official camera profile into the CARLA server.
+overlay, which mounts the official camera profile into the CARLA server. If the server is already
+running from an earlier step, this command recreates it with the new settings.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ros2.yml -f docker-compose.autoware.yml \
@@ -199,7 +240,7 @@ Follow [Hosted Autoware](../examples/hosted-autoware.md) to copy and run the con
 ### CARLA semantic maps
 
 Map export is optional. With `carla-server` running, export both configured maps and set
-`dataset.options.map_directory: ../data/carla_maps`:
+`dataset.options.map_directory: ../data/carla_maps`. Replace 2000 with your `CARLA_RPC_PORT`:
 
 ```bash
 docker compose exec carla-experiment python -m scripts.preparation.export_carla_maps \
@@ -287,7 +328,7 @@ configurations. The framework does not fetch this checkpoint during a run.
 
 ### Reactive traffic weights and image
 
-Build `nurec-experiment` first, then the CATK image that extends it:
+Build the CATK image, which extends the `nurec-experiment` image:
 
 ```bash
 docker build --target trafficsim -t avsectester:trafficsim .
@@ -339,8 +380,8 @@ See [Reactive traffic](../guides/simulators.md#reactive-traffic) for configurati
 
 ## Optional assets
 
-PCTNet harmonization requires `third_party/libcom`, `einops` and `huggingface-hub`. Only
-`avsectester:nurec` includes the latter two dependencies. Initialize libcom with the same HTTPS
+PCTNet harmonization requires `third_party/libcom`, `einops` and `huggingface-hub`. Only the
+`nurec-experiment` image includes the latter two dependencies. Initialize libcom with the same HTTPS
 rewrite used for the other submodules:
 
 ```bash

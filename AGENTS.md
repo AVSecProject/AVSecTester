@@ -24,6 +24,13 @@ Unless the task explicitly asks you to change AVSecTester itself:
 - Experiments can occupy GPUs for hours. Check a reduced configuration first and start full
   runs only when asked.
 
+## Share the host with others
+
+- Do not stop, remove or reuse Docker containers, networks or GPU jobs that you did not start.
+  Check `docker ps` and container labels before cleaning up.
+- Choose GPUs whose free memory covers the job. Other users' load on a GPU can still slow a run.
+- Use your own ROS domain ID and CARLA ports for hosted driving systems.
+
 ## Change AVSecTester itself
 
 When the task is a framework change, follow [Contributing](docs/development/contributing.md).

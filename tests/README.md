@@ -149,6 +149,7 @@ tests/
     runlog/
       test_runlog.py
     scripts/
+      test_download_autoware_artifacts.py
       test_scripts.py
       test_write_compose_env.py
     conftest.py
@@ -221,11 +222,11 @@ python -m pip install -e '.[test,nurec]' -e third_party/avstack-core \
 python -m pip install --no-deps -e third_party/avstack-api -e third_party/lib-avstack-carla
 ```
 
-nuScenes tests require nuscenes-devkit and skip when it is absent, and avsectester:carla includes
-it. Native `AVStack` tests require the avstack checkouts and CARLA Python client. Detector
+nuScenes tests require nuscenes-devkit and skip when it is absent, and the `carla-experiment` image
+includes it. Native `AVStack` tests require the avstack checkouts and CARLA Python client. Detector
 configuration tests construct models without checkpoint weights and skip configurations whose
-optional checkout or model package is absent. `avsectester:nurec` provides AlpaSim for the
-AlpaSim-dependent tests.
+optional checkout or model package is absent. The `nurec-experiment` image provides AlpaSim for
+the AlpaSim-dependent tests.
 
 Offline tests do not start simulator services or require model weights or a GPU.
 CI uses the PyPI `carla==0.9.16` client. The CARLA experiment image uses the CARLA 1.0 wheel
