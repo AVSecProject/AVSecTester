@@ -38,7 +38,7 @@ OPTIONAL_DEPENDENCY_OWNERS = {
     "mmdet3d": (MODULAR_STACK,),
     "nuscenes": ("datasets.nuscenes",),
     "torch": (
-        "attack.optimization", ALPAMAYO, DETECTOR, SCORERS, NUREC + ".simulator", "rendering",
+        "attack.optimization", ALPAMAYO, DETECTOR, SCORERS, NUREC + ".scene", "rendering",
         "implemented_attacks.patch_attack.optimization_data",
         "implemented_attacks.stop_sign_patch_attack.detector_optimization",
     ),
@@ -121,6 +121,11 @@ def test_dependency_layers():
 
 def _allowed_peer_dependency(module, target):
     source, dependency = module.split("."), target.split(".")
+    peers = {"carla", "nurec"}
+    if (source[1:3] == dependency[1:3] == ["closed_loop", "simulators"]
+            and len(source) > 3 and len(dependency) > 3
+            and source[3] in peers and dependency[3] in peers and source[3] != dependency[3]):
+        return False
     if source[1] == "maps" and dependency[1] == "datasets":
         return False
     if dependency[1] == "implemented_attacks":

@@ -436,12 +436,13 @@ Sensor corruptions and hooks follow the [randomness rules](../guides/environment
 ## Physical and model-visible records
 
 `StateEstimate` contains the model-visible `vehicle_state` and `ego_speed` produced by
-localization. Physical snapshots remain separate from these values.
+localization. Physical snapshots remain separate from these values. Simulators report
+`ego_speed` as a nonnegative speed in m/s. A native `vehicle_state` keeps the direction of motion.
 
 | Record | Fields and coordinates |
 |---|---|
 | `Observation` | `t`, `frame`, `sensor_data`, `calibration`, `vehicle_state`, `ego_speed`, `route`, `deliveries`, `state_estimates`. Model-visible |
-| `Control` | `throttle`, `steer`, `brake`, optional `trajectory` |
+| `Control` | `throttle`, `steer` in [-1, 1] with positive values turning right, `brake`, optional `trajectory` |
 | `WorldSnapshot` | `t`, `frame`, `vehicle_state`, `ego_speed`, `ego`, `actors`, `traffic_lights`, `objects`. Physical |
 | `ActorState` | world-from-actor `pose`, `velocity`, `category`, optional `extent`, local `box_center` and `box_rotation` |
 | `Detection` | ego-frame `position`, full `extent`, `yaw`, `category`, `score` |
@@ -476,7 +477,9 @@ sensors to their latest physical acquisitions up to the decision, including fram
 hooks. `sensor_geometry` retains recorded cameras when any selected representation keeps them.
 `object_visibility` covers the latest physical acquisitions independently of input hooks.
 `detection_sensor` names the detection source. `detection_capture_id` associates detections with its
-latest delivered frame across decisions. See
+latest delivered frame across decisions. A simulator that detects collisions lists the IDs of the
+actors that touched the ego during the decision interval in `telemetry.collisions`. CARLA + NuRec
+lists the recorded tracks whose CARLA proxy body box touched the ego body box. See
 [metric evidence](../guides/evaluation.md#built-in-metrics) for how metrics use capture IDs.
 
 `CaptureRecord` records a timestamp's due `sensor_ids`, `frame_ranges_us`,

@@ -1,0 +1,175 @@
+# Paths are relative to this file; set data/model paths for your machine.
+device: cuda:0
+dataset:
+  type: NuRecDataset
+  options:
+    dataroot: ../data/nurec/26.04_release
+    camera_id: camera_front_wide_120fov
+    time_step: 0.1
+split:
+  train_segments: 5
+  seed: 0
+  execute: [test]
+simulator:
+  type: CarlaNuRecSimulator
+  options:
+    depth: none
+    object_occlusion: rendered_probes
+    occlusion_tolerance_m: 0.15
+    client:
+      connect_ip: 127.0.0.1
+      connect_port: 2000
+      rate: 20
+    route_generator: map
+    renderer:
+      type: avsectester.closed_loop.simulators.nurec:NuRecRenderer
+      options:
+        endpoint: 127.0.0.1:50052
+        cameras:
+        - camera_front_wide_120fov
+        - camera_front_tele_30fov
+        - camera_cross_left_120fov
+        - camera_cross_right_120fov
+        asset_directory: ../results/nre-assets
+avstack:
+  type: AlpamayoAVStack
+  options:
+    checkpoint_path: ../models/Alpamayo-1.5-10B
+    camera_ids:
+    - camera_front_wide_120fov
+    - camera_front_tele_30fov
+    - camera_cross_left_120fov
+    - camera_cross_right_120fov
+    frame_subsample: 1
+attacks:
+  clean:
+    type: StopSignPatchAttack
+    options:
+      approach_m: 100
+      min_approach_m: 60
+      initial_patch: none
+      harmonizer: &exposure_harmonizer
+        type: avsectester.rendering.harmonizers:ExposureHarmonizer
+        options: {reference: under}
+  white:
+    type: StopSignPatchAttack
+    options:
+      approach_m: 100
+      min_approach_m: 60
+      initial_patch: white
+      harmonizer: *exposure_harmonizer
+  black:
+    type: StopSignPatchAttack
+    options:
+      approach_m: 100
+      min_approach_m: 60
+      initial_patch: black
+      harmonizer: *exposure_harmonizer
+  noise:
+    type: StopSignPatchAttack
+    options:
+      approach_m: 100
+      min_approach_m: 60
+      initial_patch: low_frequency_noise
+      harmonizer: *exposure_harmonizer
+  white_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      approach_m: 100
+      min_approach_m: 60
+      initial_patch: white
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 10
+              population_size: 8
+              sigma: 0.15
+              learning_rate: 0.1
+              batch_size: 1
+              seed: 0
+          max_training_segments: 2
+          stop_speed_mps: 0.5
+          min_stop_command_step: 5
+  black_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      approach_m: 100
+      min_approach_m: 60
+      initial_patch: black
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 10
+              population_size: 8
+              sigma: 0.15
+              learning_rate: 0.1
+              batch_size: 1
+              seed: 0
+          max_training_segments: 2
+          stop_speed_mps: 0.5
+          min_stop_command_step: 5
+  noise_rollout_nes:
+    type: StopSignPatchAttack
+    options:
+      approach_m: 100
+      min_approach_m: 60
+      initial_patch: low_frequency_noise
+      harmonizer: *exposure_harmonizer
+      optimization:
+        type: avsectester.implemented_attacks.stop_sign_patch_attack.offline:RolloutPatchOptimization
+        options:
+          optimizer:
+            type: avsectester.attack.optimization:NES
+            options:
+              steps: 10
+              population_size: 8
+              sigma: 0.15
+              learning_rate: 0.1
+              batch_size: 1
+              seed: 0
+          max_training_segments: 2
+          stop_speed_mps: 0.5
+          min_stop_command_step: 5
+evaluation:
+  metrics:
+  - type: StopLineMetrics
+  - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:AttackSuccess
+  - type: ReasoningPhraseRate
+    options:
+      phrase: stop sign
+  - type: DrivingMetrics
+  - type: avsectester.implemented_attacks.stop_sign_patch_attack.metrics:ReplicaVisibility
+runs:
+  treatments:
+  - name: clean
+    attack_name: clean
+  - name: white
+    attack_name: white
+  - name: black
+    attack_name: black
+  - name: noise
+    attack_name: noise
+  - name: white_rollout_nes
+    attack_name: white_rollout_nes
+  - name: black_rollout_nes
+    attack_name: black_rollout_nes
+  - name: noise_rollout_nes
+    attack_name: noise_rollout_nes
+  seeds:
+  - 0
+  decision_steps: null
+  recording:
+    sensor_ids:
+    - camera_front_wide_120fov
+    representations:
+    - model_input
+    every_n_captures: 10
+  output: ../results/carla_nurec_stop_sign_patch_alpamayo_2604

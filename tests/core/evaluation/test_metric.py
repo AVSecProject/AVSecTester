@@ -194,6 +194,14 @@ def test_driving_metrics(make_log, make_actor, make_group):
     assert values["overlap"]["min_distance"] == 0. and values["overlap"]["collision"] is True
     assert all(isinstance(values["apart"][name], UnavailableMetricValue)
                for name in ("min_distance", "collision"))
+    reported = {"apart": make_log([2., 0.], actors={"lead": make_actor(10.)}),
+                "unknown": with_inserted_objects(make_log([2., 0.], actors=unknown), {"lead": make_actor(10.)})}
+    for log in reported.values():
+        log.steps[-1].telemetry = {"collisions": ["lead"]}
+    values = DrivingMetrics().evaluate(make_group(reported))
+    assert values["apart"]["collision"] is True and values["apart"]["min_distance"] > 0.
+    assert values["unknown"]["collision"] is True
+    assert isinstance(values["unknown"]["min_distance"], UnavailableMetricValue)
     external = make_log([2., 1.])
     for step in external.steps:
         step.produced_command = step.executed_command = None

@@ -1,6 +1,7 @@
 """Tiny datasets, recorded worlds and geometry shared by public API tests."""
 import json
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -144,6 +145,8 @@ def nurec_usdz_path(tmp_path):
         pose[:3, 3] = [position * .5, 0., .3]
         transforms.append([pose.tolist(), pose.tolist()])
     rig = {
+        "T_world_base": [[0., 0., 1., 6378137.], [1., 0., 0., 0.],
+                         [0., 1., 0., 0.], [0., 0., 0., 1.]],
         "lidar_calibrations": {"lidar_gt_top_p128@scene": {
             "logical_sensor_name": "lidar_gt_top_p128",
             "unique_sensor_idx": 0, "sequence_id": "scene",
@@ -256,13 +259,16 @@ def nurec_usdz_path(tmp_path):
                   (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
                   (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
     ground_vertices = [(-20, -20, 0), (20, -20, 0), (20, 20, 0), (-20, 20, 0)]
+    opendrive = (Path(__file__).parent / "maps" / "fixtures" / "straight_stop.xodr").read_text()
+    opendrive = opendrive.replace("+lon_0=0", "+lon_0=0 +=alt_0=0").replace(
+        'max="50" unit="km/h"', 'max="25" unit="mph"',
+    )
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("rig_trajectories.json", json.dumps(rig))
         archive.writestr("sequence_tracks.json", json.dumps(tracks))
         archive.writestr("mesh.ply", mesh_ply(cube_vertices, cube_faces))
         archive.writestr("mesh_ground.ply", mesh_ply(ground_vertices, [(0, 1, 2), (0, 2, 3)]))
-        archive.writestr("map.xodr", '<OpenDRIVE><road><type><speed max="25" unit="mph"/>'
-                        '</type></road></OpenDRIVE>')
+        archive.writestr("map.xodr", opendrive)
         for layer, values in layers.items():
             rows = [{"key": {"clip_id": "scene", "label_class_id": "test", "map_id": identity},
                      layer: data, "version": 0} for identity, data in values]

@@ -67,6 +67,12 @@ RUN uv pip install --no-config --python /opt/alpasim/.venv/bin/python --no-build
       yolox==0.3.0 loguru tabulate thop \
  && python -c "from yolox.models import YOLOX, YOLOPAFPN, YOLOXHead"
 
+COPY --from=carlasim/carla:1.0@sha256:39681ed1eff895b6a813587285c51b687d7739ef8eeabcf51e38771d7b5b0263 /workspace/PythonAPI/carla/dist/carla-1.0-cp312-cp312-linux_x86_64.whl /tmp/
+RUN uv pip install --no-config --python /opt/alpasim/.venv/bin/python --no-deps \
+      /tmp/carla-1.0-cp312-cp312-linux_x86_64.whl \
+ && python -c "import carla" \
+ && rm /tmp/carla-1.0-cp312-cp312-linux_x86_64.whl
+
 WORKDIR /app
 ENV PYTHONPATH=/app
 CMD ["bash"]

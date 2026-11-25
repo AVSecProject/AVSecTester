@@ -68,6 +68,11 @@ def test_step(dynamics, command, position, speed, yaw, yaw_rate):
     assert initial.x == 10. and initial.speed == 0.
 
 
+def test_positive_bicycle_steer_turns_right():
+    state = KinematicBicycle().step(PlanarEgoState(speed=5.), Control(steer=.5), .1)
+    assert state.yaw < 0 and state.yaw_rate < 0 and state.y < 0
+
+
 def test_trajectory_follower_delayed_reference():
     dynamics = TrajectoryFollower()
     initial = PlanarEgoState(x=10.)

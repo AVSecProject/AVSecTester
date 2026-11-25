@@ -28,6 +28,7 @@ environment. See [Implement an attack](../guides/attacks.md) for lifecycle phase
 | [nurec_stop_sign_patch_modular_2604.yaml](../../configs/nurec_stop_sign_patch_modular_2604.yaml) | NuRec | `RuleBasedAVStack` | `data/nurec/26.04_release`, COCO YOLOX-m | [Stop-sign patch](stop-sign-patch.md), white-box attack, algorithm used: `PGD` |
 | [nurec_stop_sign_patch_alpamayo_2601.yaml](../../configs/nurec_stop_sign_patch_alpamayo_2601.yaml) | NuRec | `AlpamayoAVStack` | `data/nurec/26.01_release`, Alpamayo | [Stop-sign patch](stop-sign-patch.md), black-box attack, algorithm used: `NES` |
 | [nurec_stop_sign_patch_alpamayo_2604.yaml](../../configs/nurec_stop_sign_patch_alpamayo_2604.yaml) | NuRec | `AlpamayoAVStack` | `data/nurec/26.04_release`, Alpamayo | [Stop-sign patch](stop-sign-patch.md), black-box attack, algorithm used: `NES` |
+| [carla_nurec_stop_sign_patch_alpamayo_2604.yaml](../../configs/carla_nurec_stop_sign_patch_alpamayo_2604.yaml) | CARLA + NuRec | `AlpamayoAVStack` | CARLA 1.0 server, `data/nurec/26.04_release`, Alpamayo | [Stop-sign patch](stop-sign-patch.md) |
 
 The `_2601` and `_2604` suffixes select NuRec 26.01 and 26.04. In the NuRec stop-sign and vehicle
 insertion configuration names, `modular` selects `RuleBasedAVStack`.

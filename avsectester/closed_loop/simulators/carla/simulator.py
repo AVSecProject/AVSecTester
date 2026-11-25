@@ -25,16 +25,14 @@ from avsectester.closed_loop.ros_interception.declaration import (
 from avsectester.closed_loop.simulators.messages import MessageChannel, MessageStage
 from avsectester.datasets.base import FrameData, SensorDataReference
 from avsectester.datasets.carla import (
-    CARLA_WORLD_SETTINGS, CARLA_CLIENT_RUNTIME_SETTINGS, CARLA_CLIENT_SUBSTEP_SETTINGS,
-    CarlaRecipe, PrescribedMotion, validate_carla_world_settings,
+    CARLA_WORLD_SETTINGS, CarlaRecipe, PrescribedMotion, validate_carla_world_settings,
 )
 from avsectester.geometry.poses import MIRROR_Y, mirror_y_transform
 from avsectester.data_types import Control, Observation, WorldSnapshot
 from avsectester.validation import require_nonnegative_integer, require_nonnegative_number
-from avsectester.validation import require_positive_integer, require_positive_number
 from avsectester.validation import timestamp_to_microseconds
 from avsectester.closed_loop.timing import (
-    SensorTiming, TimingCapabilities, TimingConfiguration, initial_history_times, seconds_to_microseconds,
+    SensorTiming, TimingCapabilities, TimingConfiguration, initial_history_times,
 )
 
 from .conversions import _actor_state, _traffic_light_state
@@ -49,6 +47,8 @@ from .sensors import (
     SensorAlignmentError, SensorCapture, _require_pinhole_sensor, _use_pinhole_cameras,
     configure_recipe_blueprints, decode_carla_depth, register_pinhole_camera, validate_native_sensor_tick,
 )
+from .world import (NativeCommands, carla_world_key, configure_world_settings, ticks_for_duration,
+                    validated_client_settings)
 
 _MAPS_WITHOUT_LAYERS = frozenset({"Town10HD_Opt"})
 # Default acceptable_lag in CARLA's autoware_demo.py.
@@ -178,32 +178,7 @@ class CarlaSimulator(Simulator):
         realtime_factor: float | None = None, external_startup_s: float = 0.0,
         external_driving_system: ExternalDrivingSystem | None = None,
     ) -> None:
-        unknown = set(client) - CARLA_CLIENT_RUNTIME_SETTINGS
-        if unknown:
-            raise ValueError(f"CARLA client only accepts runtime settings: {sorted(unknown)}")
-        self.client_config = deepcopy(client)
-        self.client_config.setdefault("rate", 20.0)
-        self.client_config.setdefault("synchronous", True)
-        if (isinstance(self.client_config["rate"], bool)
-                or not isinstance(self.client_config["rate"], (int, float))
-                or not math.isfinite(self.client_config["rate"]) or self.client_config["rate"] <= 0):
-            raise ValueError("CARLA client rate must be positive and finite")
-        if self.client_config["synchronous"] is not True:
-            raise ValueError("CARLA requires synchronous operation")
-        if "substepping" in client and not isinstance(client["substepping"], bool):
-            raise ValueError("client.substepping must be a boolean")
-        if "max_substep_delta_time" in client:
-            require_positive_number(
-                client["max_substep_delta_time"], "client.max_substep_delta_time")
-        if "max_substeps" in client:
-            require_positive_integer(client["max_substeps"], "client.max_substeps")
-        for name in ("seed", "traffic_manager_seed"):
-            if self.client_config.get(name) is not None:
-                require_nonnegative_integer(self.client_config[name], f"client.{name}")
-        for name in ("connect_port", "traffic_manager_port"):
-            value = self.client_config.get(name, 2000 if name == "connect_port" else 8000)
-            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
-                raise ValueError(f"client.{name} must be an integer in [1,65535]")
+        self.client_config, self._base_tick_us = validated_client_settings(client)
         require_nonnegative_integer(settle_iters, "settle_iters")
         require_nonnegative_number(occlusion_tolerance_m, "occlusion_tolerance_m")
         if ego_control not in {"framework", "ros2"}:
@@ -228,20 +203,13 @@ class CarlaSimulator(Simulator):
         self.occlusion_tolerance_m = occlusion_tolerance_m
         self.simulator_version = simulator_version
         self.depth_camera = depth_camera
-        try:
-            self._base_tick_us = seconds_to_microseconds(1 / float(self.client_config["rate"]))
-        except ValueError as error:
-            raise ValueError("CARLA client.rate must produce an integer-microsecond base tick") from error
         self.camera_warmup_s = camera_warmup_s
         self.ground_settle_s = ground_settle_s
         self.external_startup_s = external_startup_s
         for name, duration in (("camera_warmup", camera_warmup_s), ("ground_settle", ground_settle_s),
                                ("external_startup", external_startup_s)):
-            require_nonnegative_number(duration, f"{name}_s")
-            ticks = duration * float(self.client_config["rate"])
-            if not math.isfinite(ticks) or not math.isclose(ticks, round(ticks), rel_tol=0., abs_tol=1e-9):
-                raise ValueError(f"{name}_s must be a whole number of CARLA base ticks")
-            setattr(self, f"{name}_ticks", round(ticks))
+            ticks = ticks_for_duration(duration, self.client_config["rate"], f"{name}_s")
+            setattr(self, f"{name}_ticks", ticks)
         self._decision_period_us = self._base_tick_us if decision_period_us is None else decision_period_us
         if decision_period_us is not None and (isinstance(decision_period_us, bool)
                 or not isinstance(decision_period_us, int) or decision_period_us <= 0):
@@ -379,7 +347,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._history_pose_times = frozenset()
         self._origin_tick = 0
         self._origin_clock_us = None
-        self._native_commands = []
+        self._native_commands = NativeCommands()
         self._last_tick_end_wall: float | None = None
         self._pacing: _TickPacing | None = None
         self._interval_pacing: list[dict[str, float | int | bool]] = []
@@ -390,16 +358,10 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         self._message_snapshot: tuple[int, WorldSnapshot] | None = None
 
     def _queue_native_command(self, command):
-        self._native_commands.append(command)
+        self._native_commands.queue(command)
 
     def _flush_native_commands(self):
-        if not self._native_commands:
-            return
-        commands, self._native_commands = self._native_commands, []
-        responses = self.client.client.apply_batch_sync(commands, False)
-        failures = [response.error for response in responses if response.has_error()]
-        if failures:
-            raise RuntimeError(f"CARLA native command failed: {'; '.join(failures)}")
+        self._native_commands.flush(self.client.client)
 
     def _tick(self, *, start_pacing=False):
         factor = self.simulator.realtime_factor
@@ -449,10 +411,7 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
     @property
     def world_key(self) -> tuple[str, str, int]:
         client = self.client_config
-        host = client.get("connect_ip", "127.0.0.1")
-        if host in {"localhost", "127.0.0.1", "::1"}:
-            host = "localhost"
-        return ("carla", host, client.get("connect_port", 2000))
+        return carla_world_key(client.get("connect_ip", "127.0.0.1"), client.get("connect_port", 2000))
 
     @property
     def can_insert_objects(self) -> bool:
@@ -663,31 +622,6 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
             _use_pinhole_cameras(scenario)
         return scenario
 
-    def _configure_world_settings(self, client_config):
-        world = self.client.world
-        native = world.get_settings()
-        requested = {"synchronous_mode": client_config["synchronous"],
-                     "fixed_delta_seconds": 1. / client_config["rate"]}
-        requested.update((name, client_config[name]) for name in CARLA_CLIENT_SUBSTEP_SETTINGS
-                         if name in client_config)
-        actual = {name: getattr(native, name) for name in (
-            "synchronous_mode", "fixed_delta_seconds", *CARLA_CLIENT_SUBSTEP_SETTINGS)}
-        if self._uses_native_ros2:
-            requested["publish_tf"] = self.simulator._ros2_publish_tf
-            world.set_publish_tf(requested["publish_tf"])
-            actual["publish_tf"] = world.get_publish_tf()
-        for name, value in requested.items():
-            observed = actual[name]
-            matches = observed == value
-            if name in {"fixed_delta_seconds", "max_substep_delta_time"} and observed is not None:
-                # The SDK can return these settings at native floating-point precision.
-                matches = math.isclose(observed, value, rel_tol=1e-7)
-            if not matches:
-                raise RuntimeError(
-                    f"CARLA world setting {name} differs from the requested value: "
-                    f"expected {value!r}, got {observed!r}")
-        return actual
-
     def _initialize_world(self, start, initialization, environment):
         from avcarla.config import CARLA
 
@@ -709,7 +643,9 @@ class CarlaSimulatorRuntime(SimulatorRuntime):
         replay["npcs"] = []
         self.client = CARLA.build(client_config)
         self._resources.callback(self.client.close)
-        self.initialization_report["world_settings"] = self._configure_world_settings(client_config)
+        publish_tf = self.simulator._ros2_publish_tf if self._uses_native_ros2 else None
+        self.initialization_report["world_settings"] = configure_world_settings(
+            self.client.world, client_config, publish_tf=publish_tf)
         self._apply_map_layers(scenario.get("map_layers"))
         ego_cfg = deepcopy(scenario["ego"])
         replay_ego_cfg = deepcopy(ego_cfg)

@@ -24,7 +24,7 @@ Type paths and hook imports execute Python code. Use only trusted sources.
 | Category and location | Accepted names |
 |---|---|
 | `dataset.type` | `CarlaDataset`, `NuRecDataset`, `NuScenesDataset` |
-| `simulator.type` | `CarlaSimulator`, `NuRecSimulator`, `RecordedReplaySimulator` |
+| `simulator.type` | `CarlaSimulator`, `NuRecSimulator`, `CarlaNuRecSimulator`, `RecordedReplaySimulator` |
 | `simulator.options.external_driving_system.type` | `AutowareDrivingSystem` |
 | `avstack.type` | `ModularAVStack`, `CameraForwardCollisionAVStack`, `AlpamayoAVStack`, `RuleBasedAVStack`, `ExternalAVStack` |
 | `evaluation.metrics[].type` | `DrivingMetrics`, `DetectionMetrics`, `TrajectoryDeviation`, `StopImpact`, `StopLineMetrics`, `ReasoningPhraseRate` |
@@ -441,8 +441,8 @@ from `NuRecDataset`. Reset requires `ScenarioStart`. Constructor defaults are:
 
 `nurec_patch.yaml`, `nurec_speed_feedback.yaml` and `nurec_object_insertion.yaml` use
 `ground_mesh: mesh` and the default mesh depth. The four stop-sign configurations use
-`ground_mesh: mesh_ground` and `depth: none`. All eight supplied NuRec configurations select
-`route_generator: map`, `physics_update_mode: ego_only` and `AlpaSimController` explicitly.
+`ground_mesh: mesh_ground` and `depth: none`. The eight supplied `NuRecSimulator` configurations
+explicitly select `route_generator: map`, `physics_update_mode: ego_only` and `AlpaSimController`.
 
 ```yaml
 simulator:
@@ -503,6 +503,24 @@ Traffic defaults to `null`. Its fixed traffic step is 0.1 s. Decision periods mu
 multiples of that step. Selection requires `history_steps - 1` preceding recorded decisions.
 Traffic configuration affects preparation identity. `metadata.load` can
 share segments between modes. Services are managed by [run](cli.md#automatic-local-services).
+
+### CARLA with NuRec settings
+
+`CarlaNuRecSimulator` accepts the NuRec scene, renderer, navigation and object options above.
+CARLA supplies physics, so `dynamics`, `physics_update_mode`, `ground_mesh` and `traffic` are
+not options for this simulator. The decision period must be a whole number of CARLA physics ticks.
+
+| Option | Default | Accepted values or role |
+|---|---|---|
+| `client` | required | Mapping with `connect_ip`, `connect_port`, `rate`, `synchronous`, `substepping`, `max_substep_delta_time` and `max_substeps`. Defaults to loopback, port 2000 and 20 Hz. Synchronous operation is required |
+| `ego_blueprint` | `null` | Native vehicle blueprint. `null` chooses by recorded ego size |
+| `settle_s` | 1.0 | Brake-hold duration in seconds at a physical start. Must be a whole number of physics ticks |
+| `tracker` | `null` | Tracker tuning only. `null` uses `TrajectoryTracker` defaults |
+| `timeout_s` | 60.0 | Positive timeout in seconds for CARLA RPC and the isolated OpenDRIVE check |
+
+The tracker uses the measured wheelbase and maximum steering angle of the selected ego vehicle.
+
+See [CARLA + NuRec behavior](../guides/simulators.md#carla-with-nurec).
 
 ## Mesh assets
 

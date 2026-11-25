@@ -56,7 +56,7 @@ Commands absent because driving was skipped are not stop commands.
 
 | `Metric` | Measurements |
 |---|---|
-| `DrivingMetrics` | Physical speed, executed actuator braking, stopping, bounding-box distance and geometric collision with actors and inserted objects |
+| `DrivingMetrics` | Physical speed, executed actuator braking, stopping, bounding-box distance and geometric collision with actors and inserted objects, and simulator-reported collisions |
 | `TrajectoryDeviation` | Ego-position deviation at matched decision indices |
 | `DetectionMetrics` | Detection matching by distance, precision, recall and F1 |
 | `StopImpact` | Stopping and braking comparisons in both directions |
@@ -70,9 +70,11 @@ To distinguish the two kinds, write a custom `Metric` that reads `WorldSnapshot.
 
 Ego-to-object distances are the minimum separation between the two top-down bounding boxes,
 using yaw and horizontal dimensions. Overlapping or touching boxes have zero distance and
-count as a geometric collision.
-`DrivingMetrics` marks distance and collision unavailable if ego or any other participating
-object lacks a pose or bounding-box extent, unless an overlap was recorded.
+count as a geometric collision. A collision that the simulator reports in
+[`telemetry.collisions`](../reference/runtime.md#runlog) also counts.
+`DrivingMetrics` marks distance unavailable if ego or any other participating object lacks a pose
+or bounding-box extent, unless an overlap was recorded. Collision is then unavailable unless an
+overlap or a reported collision was recorded.
 
 The [metric API](../reference/python-api.md#avsectesterevaluationmetric) defines constructor
 parameters and unavailable conditions. The default set and YAML validation are described in
@@ -80,9 +82,9 @@ parameters and unavailable conditions. The default set and YAML validation are d
 
 `DrivingMetrics` uses executed actuator commands for `brake_steps`. Trajectory commands do not
 provide that evidence. External control records no executed command, so command-dependent
-measurements are unavailable. Collision is bird's-eye oriented-box overlap, not a native
-collision-sensor event. `TrajectoryDeviation` compares true ego positions at equal decision
-indices, without time or route alignment.
+measurements are unavailable. Collision is bird's-eye oriented-box overlap or a collision reported
+by the simulator, not a native collision-sensor event. `TrajectoryDeviation` compares true ego
+positions at equal decision indices, without time or route alignment.
 
 `DetectionMetrics` matches detection positions to ground-truth box centers in the capture-time
 ego frame, using sensor mounting geometry independently of model localization. It greedily

@@ -266,6 +266,15 @@ docker compose run --rm nurec-experiment version
 explicit docker compose run enables it. The image provides the Python 3.12 AlpaSim workspace and
 imports this checkout without installing the `avsectester` package, which requires Python 3.11.
 
+For [CARLA + NuRec](../guides/simulators.md#carla-with-nurec), use the NuRec image and start the
+CARLA 1.0 server with `docker compose up -d carla-server`. Set `client.connect_ip` to the CARLA
+host and `client.connect_port` to the `CARLA_RPC_PORT` value in `.env`. The NuRec image includes the
+matching Python 3.12 CARLA client. Once the data and checkpoint are available, run the example.
+
+```bash
+docker compose run --rm nurec-experiment run configs/carla_nurec_stop_sign_patch_alpamayo_2604.yaml
+```
+
 Obtain access to the
 [NuRec dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles-NuRec) and
 place its 26.01 and 26.04 sample sets at `data/nurec/26.01_release` and

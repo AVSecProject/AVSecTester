@@ -8,19 +8,14 @@ import numpy as np
 from avsectester.geometry.poses import interpolate_transform, mirror_y_points, mirror_y_transform
 from avsectester.data_types import ActorState, Control
 
-from .conversions import rotation_to_carla
+from .conversions import carla_transform
 
 
 def _place(runtime, actor, state):
     import carla
 
-    pose = mirror_y_transform(np.asarray(state.pose, dtype=float))
-    if pose.shape != (4, 4) or not np.isfinite(pose).all():
-        raise ValueError("Prescribed CARLA pose must be a finite 4x4 matrix")
-    pitch, yaw, roll = rotation_to_carla(pose[:3, :3])
-    rotation = carla.Rotation(pitch=pitch, yaw=yaw, roll=roll)
     runtime._queue_native_command(carla.command.ApplyTransform(
-        actor.id, carla.Transform(carla.Location(*pose[:3, 3]), rotation)))
+        actor.id, carla_transform(state.pose)))
     runtime._queue_native_command(carla.command.ApplyTargetVelocity(
         actor.id, carla.Vector3D(*mirror_y_points(state.velocity))))
 

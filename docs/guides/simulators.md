@@ -562,6 +562,37 @@ replacement object list needs a fresh render request. `SensorView.composite_plan
 new reconstruction probes from a detached view. Geometry mode can build plans from its supplied
 depth and actors.
 
+## CARLA with NuRec
+
+`CarlaNuRecSimulator` builds a CARLA world from the scene's OpenDRIVE map. The map's
+georeference and the recording's Earth-fixed transform align CARLA and NuRec coordinates.
+Starts with missing alignment, missing recorded ego dimensions or a map rejected by CARLA
+are unavailable. A failure of the map check itself, such as a missing CARLA client or a timeout,
+raises an error instead. NRE provides all camera and LiDAR captures. Runtimes in one process
+keep the CARLA world when the map is unchanged and the world holds no vehicles, walkers, sensors
+or controllers. Otherwise each runtime builds a new world.
+
+The ego rear axle starts at the recorded rig pose. CARLA applies vehicle physics, including
+deterministic collision handling. Actuator commands go directly to CARLA. Rig-frame
+trajectories are tracked by a pure-pursuit steering controller and a speed controller that
+uses waypoint timestamps. An empty trajectory applies full braking. Acquisitions and pose reports
+align with native physics ticks.
+
+Recorded vehicles, riders and pedestrians use CARLA proxies selected by size. Proxies follow
+the recording or an explicit actor-state override. They act as solid obstacles and keep their
+prescribed motion through a collision. The initialization and termination records list tracks
+whose proxies could not be created. After each physics tick, the ego body box is compared with
+every proxy body box using CARLA blueprint dimensions. Each decision's
+[`telemetry.collisions`](../reference/runtime.md#runlog) lists the tracks whose boxes touched the
+ego box during its interval.
+
+Before the origin, observation history comes from the recording. For a physical start, the ego
+settles under braking before the selected capture and receives its recorded velocity at handoff.
+The origin capture uses the settled CARLA rig pose. With force-GT, the ego follows the recorded
+pose kinematically and switches to physics with recorded velocity at handoff. CARLA + NuRec
+does not expose checkpoints. See
+[CARLA + NuRec settings](../reference/configuration.md#carla-with-nurec-settings).
+
 ## Recorded playback
 
 `RecordedReplaySimulator` captures supported dataset frames while ego and other actors follow

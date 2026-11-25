@@ -32,6 +32,19 @@ def rotation_to_carla(rotation: ArrayLike) -> tuple[float, float, float]:
     return float(angles[0]), float(angles[1]), float(angles[2])
 
 
+def carla_transform(world_from_x: ArrayLike) -> Any:
+    """Convert a right-handed framework pose to a native CARLA transform."""
+    import carla
+
+    pose = np.asarray(world_from_x, dtype=float)
+    if pose.shape != (4, 4) or not np.isfinite(pose).all():
+        raise ValueError("CARLA pose must be a finite 4x4 matrix")
+    pose = mirror_y_transform(pose)
+    pitch, yaw, roll = rotation_to_carla(pose[:3, :3])
+    rotation = carla.Rotation(pitch=pitch, yaw=yaw, roll=roll)
+    return carla.Transform(carla.Location(*pose[:3, 3]), rotation)
+
+
 def _traffic_light_state(state: Any) -> str:
     value = str(state).rsplit(".", 1)[-1].lower()
     return value if value in {"red", "yellow", "green", "off"} else "unknown"
@@ -52,5 +65,6 @@ def _actor_state(actor, type_id, box=None):
 
 
 __all__ = [
+    'carla_transform',
     'rotation_to_carla',
 ]

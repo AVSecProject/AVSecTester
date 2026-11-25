@@ -18,7 +18,7 @@ AlpaSim in these names is the framework's runtime ported from AlpaSim, not AlpaS
 |---|---|---|---|---|
 | AlpaSim + NuRec | AlpaSim | Real-world drives reconstructed with NuRec | NuRec | Real-world data and the lightest setup. Suits AI model research and fits end-to-end and custom modular driving systems best |
 | CARLA + CARLA scenarios | CARLA | Scenarios built on CARLA maps | CARLA | The most customizable scenarios, built on any CARLA map. Hosts Autoware through CARLA's official native ROS 2 integration for research on asynchronous driving systems |
-| CARLA + NuRec | CARLA | Real-world drives reconstructed with NuRec | NuRec | Real-world appearance with CARLA's simulation: physics for every vehicle and interactive traffic from the Traffic Manager or Scenic |
+| CARLA + NuRec | CARLA | Real-world drives reconstructed with NuRec | NuRec | CARLA vehicle physics with recorded traffic as solid obstacles |
 
 [Supported configurations](#supported-configurations) lists the driving systems of each option.
 
@@ -32,11 +32,17 @@ surface, not on the reconstructed ground.
 - Where the OpenDRIVE road surface departs from the reconstructed ground, the ego's height, roll
   and pitch shift the rendered camera views. These errors are larger than in AlpaSim + NuRec.
 - In some scenes the ego cannot spawn, leaves the road or overturns.
-- The OpenDRIVE map lacks many lanes of the recorded lane map. CARLA's waypoints, Traffic Manager
-  routes and spawn checks do not work where lanes are missing.
+- The OpenDRIVE map lacks many lanes of the recorded lane map, which can prevent ego spawning
+  or leave a recorded route without a drivable surface.
+- CARLA places generic props for map objects. The props differ in shape from the recorded objects
+  and act as solid obstacles even though they are absent from NRE imagery.
 - Vehicles use the closest CARLA blueprint, so their collision and obstacle shapes differ from the
   recorded vehicles. Vehicles longer than every blueprint, such as trucks with trailers, are
   shortened.
+- Trajectories are tracked by CARLA's official controller, which follows only the speed of the
+  current trajectory segment. A driving system that replans every decision therefore executes
+  planned braking only weakly. In the stop-sign patch examples the ego crosses the stop line
+  without stopping, so attack success cannot be measured.
 
 ## Components
 
@@ -103,8 +109,9 @@ Paths are relative to `avsectester/`.
 | `closed_loop/ros_interception/` | ROS declarations, socket transport, forwarding and observation processes, message conversion and pose projection |
 | `closed_loop/simulators/` | Contracts, recorded playback, dynamics, navigation, ground contact and object composition |
 | `closed_loop/simulators/messages.py` | Message-stage and relay transport contracts for simulators |
-| `closed_loop/simulators/carla/` | CARLA world and sensor integration, including physical snapshots, rig geometry and hosted driving systems |
-| `closed_loop/simulators/nurec/` | NuRec rendering, `traffic.py` sessions and `server.py` local services |
+| `closed_loop/simulators/carla/` | Shared CARLA world, vehicle and trajectory control, native sensors, and hosted driving systems |
+| `closed_loop/simulators/nurec/` | Shared NuRec scene, NRE rendering, and AlpaSim-style dynamics and traffic |
+| `closed_loop/simulators/carla_nurec/` | Coordinate alignment and recorded proxies for CARLA physics in a NuRec scene |
 | `closed_loop/avstacks/` | Driving interfaces and `DrivingAdapter` |
 | `closed_loop/avstacks/implemented/` | Supplied driving systems, including `modules/` |
 | `attack/` | `Attack` contracts and structured `offline_report` outputs |
@@ -144,6 +151,7 @@ The declared type-only exception below permits annotations without a runtime dep
 
 Map readers do not depend on datasets. Rendering does not depend on simulators or attacks.
 Within L2, the ROS socket transport implements the simulator's message channel contract.
+The CARLA + NuRec integration uses the CARLA and NuRec packages. Those two packages are independent.
 Generic attack tools do not import concrete attacks, and concrete attacks do not import one
 another. Optional SDK, model and GPU imports stay inside their owning implementations.
 
@@ -158,6 +166,8 @@ The supplied [configuration list](../examples/README.md) contains these combinat
 | `CarlaDataset` | `CarlaSimulator` | `ExternalAVStack` with `AutowareDrivingSystem` |
 | `NuRecDataset` | `NuRecSimulator` | `AlpamayoAVStack` |
 | `NuRecDataset` | `NuRecSimulator` | `RuleBasedAVStack` |
+| `NuRecDataset` | `CarlaNuRecSimulator` | `AlpamayoAVStack` |
+| `NuRecDataset` | `CarlaNuRecSimulator` | `RuleBasedAVStack` |
 | `NuScenesDataset` | `RecordedReplaySimulator` | `CameraForwardCollisionAVStack` |
 
 NuRec can collect LiDAR alongside cameras without changing the selected driving system. See

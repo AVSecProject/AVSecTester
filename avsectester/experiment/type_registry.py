@@ -36,6 +36,7 @@ _BUILTINS = {
     "CarlaSimulator": "avsectester.closed_loop.simulators.carla:CarlaSimulator",
     "AutowareDrivingSystem": "avsectester.closed_loop.simulators.carla.autoware:AutowareDrivingSystem",
     "NuRecSimulator": "avsectester.closed_loop.simulators.nurec:NuRecSimulator",
+    "CarlaNuRecSimulator": "avsectester.closed_loop.simulators.carla_nurec:CarlaNuRecSimulator",
     "RecordedReplaySimulator": "avsectester.closed_loop.simulators.recorded:RecordedReplaySimulator",
     "ModularAVStack": "avsectester.closed_loop.avstacks.implemented.modular:ModularAVStack",
     "AlpamayoAVStack": "avsectester.closed_loop.avstacks.implemented.alpamayo:AlpamayoAVStack",

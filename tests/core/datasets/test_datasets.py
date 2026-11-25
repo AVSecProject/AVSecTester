@@ -205,6 +205,24 @@ def test_nurec_archive_listing(nurec_dataset, nurec_usdz_path):
     with pytest.raises(ValueError, match="contains no .usdz archives"):
         list(empty.scenarios())
 
+
+def test_nurec_opendrive(nurec_dataset, nurec_usdz_path, tmp_path):
+    missing = tmp_path / "without-opendrive.usdz"
+    with zipfile.ZipFile(nurec_usdz_path) as source, zipfile.ZipFile(missing, "w") as destination:
+        assert nurec_dataset.opendrive("scene") == source.read("map.xodr").decode()
+        for member in source.namelist():
+            if member != "map.xodr":
+                destination.writestr(member, source.read(member))
+    assert NuRecDataset([missing]).opendrive("scene") is None
+
+
+def test_nurec_ecef_from_scene(nurec_dataset):
+    np.testing.assert_array_equal(
+        nurec_dataset.ecef_from_scene("scene"),
+        [[0., 0., 1., 6378137.], [1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 0., 1.]],
+    )
+
+
 def test_nurec_scene_mesh(nurec_dataset, nurec_usdz_path, tmp_path):
     vertices, faces = nurec_dataset.scene_mesh("scene")
     assert vertices.shape == (12, 3) and faces.shape == (14, 3)

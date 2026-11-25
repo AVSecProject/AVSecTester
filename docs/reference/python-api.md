@@ -15,6 +15,7 @@
 | L0 | [`avsectester.geometry`](#avsectestergeometry) |
 | L0 | [`avsectester.geometry.boxes`](#avsectestergeometryboxes) |
 | L0 | [`avsectester.geometry.cameras`](#avsectestergeometrycameras) |
+| L0 | [`avsectester.geometry.geodesy`](#avsectestergeometrygeodesy) |
 | L0 | [`avsectester.geometry.lidars`](#avsectestergeometrylidars) |
 | L0 | [`avsectester.geometry.mesh`](#avsectestergeometrymesh) |
 | L0 | [`avsectester.geometry.poses`](#avsectestergeometryposes) |
@@ -72,15 +73,24 @@
 | L2 | [`avsectester.closed_loop.simulators.carla.autoware.container.apply_interception`](#avsectesterclosed_loopsimulatorscarlaautowarecontainerapply_interception) |
 | L2 | [`avsectester.closed_loop.simulators.carla.autoware.driving_system`](#avsectesterclosed_loopsimulatorscarlaautowaredriving_system) |
 | L2 | [`avsectester.closed_loop.simulators.carla.conversions`](#avsectesterclosed_loopsimulatorscarlaconversions) |
+| L2 | [`avsectester.closed_loop.simulators.carla.ego_vehicle`](#avsectesterclosed_loopsimulatorscarlaego_vehicle) |
 | L2 | [`avsectester.closed_loop.simulators.carla.external_driving_system`](#avsectesterclosed_loopsimulatorscarlaexternal_driving_system) |
 | L2 | [`avsectester.closed_loop.simulators.carla.sensors`](#avsectesterclosed_loopsimulatorscarlasensors) |
 | L2 | [`avsectester.closed_loop.simulators.carla.simulator`](#avsectesterclosed_loopsimulatorscarlasimulator) |
+| L2 | [`avsectester.closed_loop.simulators.carla.trajectory_tracking`](#avsectesterclosed_loopsimulatorscarlatrajectory_tracking) |
+| L2 | [`avsectester.closed_loop.simulators.carla.vehicles`](#avsectesterclosed_loopsimulatorscarlavehicles) |
+| L2 | [`avsectester.closed_loop.simulators.carla.world`](#avsectesterclosed_loopsimulatorscarlaworld) |
+| L2 | [`avsectester.closed_loop.simulators.carla_nurec`](#avsectesterclosed_loopsimulatorscarla_nurec) |
+| L2 | [`avsectester.closed_loop.simulators.carla_nurec.alignment`](#avsectesterclosed_loopsimulatorscarla_nurecalignment) |
+| L2 | [`avsectester.closed_loop.simulators.carla_nurec.proxies`](#avsectesterclosed_loopsimulatorscarla_nurecproxies) |
+| L2 | [`avsectester.closed_loop.simulators.carla_nurec.simulator`](#avsectesterclosed_loopsimulatorscarla_nurecsimulator) |
 | L2 | [`avsectester.closed_loop.simulators.ego_dynamics`](#avsectesterclosed_loopsimulatorsego_dynamics) |
 | L2 | [`avsectester.closed_loop.simulators.ground_contact`](#avsectesterclosed_loopsimulatorsground_contact) |
 | L2 | [`avsectester.closed_loop.simulators.messages`](#avsectesterclosed_loopsimulatorsmessages) |
 | L2 | [`avsectester.closed_loop.simulators.navigation`](#avsectesterclosed_loopsimulatorsnavigation) |
 | L2 | [`avsectester.closed_loop.simulators.nurec`](#avsectesterclosed_loopsimulatorsnurec) |
 | L2 | [`avsectester.closed_loop.simulators.nurec.renderer`](#avsectesterclosed_loopsimulatorsnurecrenderer) |
+| L2 | [`avsectester.closed_loop.simulators.nurec.scene`](#avsectesterclosed_loopsimulatorsnurecscene) |
 | L2 | [`avsectester.closed_loop.simulators.nurec.server`](#avsectesterclosed_loopsimulatorsnurecserver) |
 | L2 | [`avsectester.closed_loop.simulators.nurec.simulator`](#avsectesterclosed_loopsimulatorsnurecsimulator) |
 | L2 | [`avsectester.closed_loop.simulators.nurec.traffic`](#avsectesterclosed_loopsimulatorsnurectraffic) |
@@ -240,6 +250,17 @@ a triangular number `(order + 1)(order + 2) / 2`.
 `FThetaCamera.unproject` raises `NotImplementedError` without `pixeldist_to_angle` and evaluates
 that inverse polynomial directly rather than solving the forward polynomial. A singular screen
 correction (`c - d * e == 0`) is not rejected and yields non-finite rays.
+
+### avsectester.geometry.geodesy
+
+<!-- api:begin module=avsectester.geometry.geodesy -->
+Convert geodetic WGS84 coordinates to Cartesian Earth-fixed and local tangent frames.
+
+| Name and signature | Meaning |
+|---|---|
+| `ecef_from_geodetic(latitude_deg: float, longitude_deg: float, altitude_m: float) -> np.ndarray` | Return Earth-centered, Earth-fixed XYZ in meters from degrees and ellipsoidal altitude. |
+| `enu_from_ecef(latitude_deg: float, longitude_deg: float, altitude_m: float) -> np.ndarray` | Return the 4x4 Earth-fixed to local east-north-up transform at a WGS84 origin. |
+<!-- api:end -->
 
 ### avsectester.geometry.lidars
 
@@ -544,6 +565,8 @@ Read NuRec USDZ annotations and recorded initial sequences without a rendering s
 | `NuRecDataset.camera_geometry(scenario_id: str)` | Return an independent optical camera model and its rig-from-camera pose. |
 | `NuRecDataset.camera_timestamps(scenario_id: str) -> np.ndarray` | Recorded video-frame timestamps in seconds, distinct from decision positions. |
 | `NuRecDataset.usdz_path(scenario_id: str) -> str` | Return this scenario's source archive path without creating a simulator. |
+| `NuRecDataset.opendrive(scenario_id: str) -> str \| None` | Read this scenario's OpenDRIVE map text, or return None if not supplied. |
+| `NuRecDataset.ecef_from_scene(scenario_id: str) -> np.ndarray` | Read the rigid scene-to-ECEF transform or raise ValueError for missing or invalid data. |
 | `NuRecDataset.scene_mesh(scenario_id: str) -> tuple[np.ndarray, np.ndarray]` | Merge the static and ground PLY meshes in canonical scene-world coordinates. |
 | `NuRecDataset.scenario_map(scenario_id: str) -> ScenarioMap \| Unavailable` | Read canonical-world clipgt geometry, preserving missing-layer reasons. |
 | `NuRecDataset.ego_state(scenario_id: str, timestamp_us: int) -> ActorState` | Interpolate the recorded rig pose and world velocity within its support. |
@@ -655,6 +678,8 @@ Read canonical semantic layers through CARLA's offline OpenDRIVE client parser.
 
 | Name and signature | Meaning |
 |---|---|
+| `check_opendrive(xodr: str, timeout_s: float) -> str \| None` | Return CARLA's reason for rejecting an OpenDRIVE map, or None when the map loads. |
+| `opendrive_geo_origin(xodr: str) -> tuple[float, float, float] \| None` | Return latitude, longitude and altitude from the map header, or None if unavailable. |
 | `read_opendrive(xodr_text: str, *, name: str) -> ScenarioMap \| Unavailable` | Read OpenDRIVE without a simulator connection, or report a missing CARLA client package. |
 <!-- api:end -->
 
@@ -2132,12 +2157,34 @@ Convert native CARLA actors, signal states and rotations to canonical world reco
 
 | Name and signature | Meaning |
 |---|---|
+| `carla_transform(world_from_x: ArrayLike) -> Any` | Convert a right-handed framework pose to a native CARLA transform. |
 | `rotation_to_carla(rotation: ArrayLike) -> tuple[float, float, float]` | Return native CARLA (pitch, yaw, roll) degrees from a native rotation matrix. |
 <!-- api:end -->
 
 #### See also
 
 [Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla.ego_vehicle
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.ego_vehicle -->
+Spawn and control a CARLA vehicle through a rear-axle rig reference.
+
+| Name and signature | Meaning |
+|---|---|
+| `CarlaEgoState(world_from_rig: np.ndarray, velocity: np.ndarray, yaw_rate: float, acceleration: np.ndarray)` | Rear-axle pose, velocity in m/s, yaw rate in rad/s and acceleration in m/s². |
+| `CarlaEgoVehicle(session: CarlaWorldSession, actor: Any, geometry: BlueprintGeometry)` | Control a native vehicle relative to its rear axle in right-handed CARLA coordinates. |
+| `CarlaEgoVehicle.spawn_lift_m: float` | Vertical lift applied to the requested pose while finding a free spawn. |
+| `CarlaEgoVehicle.physics_enabled: bool` | Whether the vehicle is configured for native physics at its next tick. |
+| `CarlaEgoVehicle.spawn(session: CarlaWorldSession, geometry: BlueprintGeometry, world_from_rig: ArrayLike) -> CarlaEgoVehicle` | Try a rear-axle pose, then raise it in 0.05 m increments up to 1 m on collision. |
+| `CarlaEgoVehicle.hold() -> None` | Queue full service brake and hand brake for settling. |
+| `CarlaEgoVehicle.release() -> None` | Queue release of the service and hand brakes. |
+| `CarlaEgoVehicle.set_kinematic(world_from_rig: ArrayLike) -> None` | Queue a kinematic rig pose, switching off native physics when needed. |
+| `CarlaEgoVehicle.enable_physics(velocity: ArrayLike) -> None` | Queue native physics and a target velocity in right-handed CARLA world axes. |
+| `CarlaEgoVehicle.apply_control(throttle: float, brake: float, steer: float) -> None` | Queue actuator commands with positive steering turning right. |
+| `CarlaEgoVehicle.box_transform(world_from_rig: ArrayLike) -> np.ndarray` | Return the world transform of the body box center for a rear-axle pose. |
+| `CarlaEgoVehicle.read() -> CarlaEgoState` | Read the rig pose and native velocity and acceleration after a world tick. |
+<!-- api:end -->
 
 ### avsectester.closed_loop.simulators.carla.external_driving_system
 
@@ -2218,6 +2265,123 @@ lens-distortion attributes.
 #### See also
 
 [Simulators](../guides/simulators.md).
+
+### avsectester.closed_loop.simulators.carla.trajectory_tracking
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.trajectory_tracking -->
+Pure-pursuit steering and longitudinal speed control for CARLA.
+
+| Name and signature | Meaning |
+|---|---|
+| `TrajectoryTracker(lookahead_m: float = 3.0, speed_kp: float = 0.35, speed_ki: float = 0.04, speed_kd: float = 0.02, speed_integral_limit: float = 5.0, stop_target_speed_mps: float = 0.25, hold_speed_mps: float = 0.15, minimum_stop_brake: float = 0.25, hold_brake: float = 1.0, steering_gain: float = 1.0, max_steer_rate_per_s: float = 1.0)` | Track a right-handed trajectory with pure pursuit and speed PID. |
+| `TrajectoryTracker.identity: dict[str, float]` | Return the tuning without controller history. |
+| `TrajectoryTracker.reset() -> None` | Clear steering-rate and longitudinal PID history. |
+| `TrajectoryTracker.command(path: np.ndarray, waypoint_times_us: np.ndarray, position: np.ndarray, yaw_rad: float, speed_mps: float, time_us: int, dt: float = 0.1, *, wheelbase_m: float, max_wheel_angle_deg: float) -> Control` | Return a CARLA command for one tick using the measured vehicle geometry. |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla.vehicles
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.vehicles -->
+Measure native CARLA blueprints and match their dimensions to recorded actors.
+
+| Name and signature | Meaning |
+|---|---|
+| `BlueprintGeometry(id: str, dimensions: tuple[float, float, float], box_location: tuple[float, float, float], rear_axle_x: float \| None = None, wheelbase: float \| None = None, max_steer_angle: float \| None = None)` | Full box sizes and right-handed box center in meters, with optional wheel geometry. |
+| `BlueprintGeometry.box_transform(world_from_actor: ArrayLike) -> np.ndarray` | Return the world transform of the box center for an actor at the given pose. |
+| `best_fit_blueprint(geometries: Sequence[BlueprintGeometry], dimensions: ArrayLike) -> BlueprintGeometry` | Choose the smallest squared error in half-dimensions, in input order on ties. |
+| `probe_blueprints(session: CarlaWorldSession, pattern: str) -> tuple[BlueprintGeometry, ...]` | Measure spawnable blueprints, caching by server version and pattern. |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla.world
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla.world -->
+Configure native CARLA worlds and batch commands at tick boundaries.
+
+| Name and signature | Meaning |
+|---|---|
+| `CarlaWorldSession(client: Any, settings: Mapping[str, Any])` | Own a native CARLA world attachment and the actors created through it. |
+| `CarlaWorldSession.connect(settings: Mapping[str, Any], timeout_s: float) -> CarlaWorldSession` | Connect with validated runtime settings and apply the native RPC timeout. |
+| `CarlaWorldSession.load_opendrive_world(xodr: str) -> Any` | Activate an OpenDRIVE world built with the standard reconstructed-scene parameters. |
+| `CarlaWorldSession.level_top_z() -> float` | Return the highest level bounding-box top in meters, or zero for an empty level. |
+| `CarlaWorldSession.configure(*, publish_tf: bool \| None = None, deterministic_collisions: bool \| None = None) -> dict[str, Any]` | Apply synchronous physics settings and return the verified native values. |
+| `CarlaWorldSession.queue(command: Any) -> None` | Queue a native command to run before the next tick. |
+| `CarlaWorldSession.tick() -> int` | Flush queued commands and advance the world by one native tick. |
+| `CarlaWorldSession.blueprint(identity: str) -> Any` | Find the native blueprint with the given identifier in the active world. |
+| `CarlaWorldSession.spawn(blueprint: Any, transform: Any) -> Any \| None` | Try to spawn and register an actor, returning None if the native spawn fails. |
+| `CarlaWorldSession.place(actor: Any, world_from_actor: ArrayLike) -> None` | Queue a pose in the right-handed CARLA world coordinates. |
+| `CarlaWorldSession.place_kinematic(actor: Any, world_from_actor: ArrayLike) -> None` | Queue physics disabling and pose placement for a kinematic actor. |
+| `CarlaWorldSession.destroy(actor: Any) -> None` | Queue destruction of an owned actor at the next command boundary. |
+| `CarlaWorldSession.close() -> None` | Discard pending motion, destroy owned actors, and restore asynchronous ticking. |
+| `NativeCommands()` | Queue native commands and apply a batch without advancing the world. |
+| `NativeCommands.queue(command: Any) -> None` | Append a command in native execution order. |
+| `NativeCommands.flush(client: Any) -> None` | Apply and consume pending commands, reporting all native response errors together. |
+| `NativeCommands.clear() -> None` | Discard pending commands without applying them. |
+| `carla_world_key(host: str, port: int) -> tuple[str, str, int]` | Return the resource key for a native CARLA endpoint, normalizing loopback addresses. |
+| `configure_world_settings(world: Any, client: Mapping[str, Any], *, publish_tf: bool \| None = None, deterministic_collisions: bool \| None = None) -> dict[str, Any]` | Check the active physics settings and apply and verify explicit TF or collision options. |
+| `ticks_for_duration(seconds: float, rate: float, name: str) -> int` | Require the named duration to be a nonnegative whole number of base ticks. |
+| `validated_client_settings(client: dict, allowed: Collection[str] = CARLA_CLIENT_RUNTIME_SETTINGS) -> tuple[dict, int]` | Copy and validate CARLA runtime settings, returning the base tick in microseconds. |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla_nurec
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla_nurec -->
+CARLA physics with NuRec scenes and NRE sensors.
+
+| Name and signature | Meaning |
+|---|---|
+| `CarlaNuRecSimulator` | [CarlaNuRecSimulator](#avsectesterclosed_loopsimulatorscarla_nurecsimulator) |
+| `CarlaNuRecSimulatorRuntime` | [CarlaNuRecSimulatorRuntime](#avsectesterclosed_loopsimulatorscarla_nurecsimulator) |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla_nurec.alignment
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla_nurec.alignment -->
+Align a reconstructed NuRec scene with the right-handed CARLA world.
+
+| Name and signature | Meaning |
+|---|---|
+| `SceneAlignment(scene_to_carla_world: np.ndarray)` | Convert between NuRec scene coordinates and right-handed CARLA world coordinates. |
+| `SceneAlignment.from_scene(xodr_origin: tuple[float, float, float], ecef_from_scene: ArrayLike) -> SceneAlignment` | Build the alignment from an OpenDRIVE origin and a scene-to-ECEF transform. |
+| `SceneAlignment.to_carla(scene_from_pose: ArrayLike) -> np.ndarray` | Transform a scene-world pose into the right-handed CARLA world. |
+| `SceneAlignment.from_carla(carla_world_from_pose: ArrayLike) -> np.ndarray` | Transform a right-handed CARLA world pose into the scene world. |
+| `SceneAlignment.vector_to_carla(scene_vectors: ArrayLike) -> np.ndarray` | Rotate scene-world vectors into the right-handed CARLA world without translating. |
+| `SceneAlignment.vector_from_carla(carla_world_vectors: ArrayLike) -> np.ndarray` | Rotate right-handed CARLA world vectors into the scene world without translating. |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla_nurec.proxies
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla_nurec.proxies -->
+Represent recorded NuRec road users with collision-enabled CARLA actors.
+
+| Name and signature | Meaning |
+|---|---|
+| `RecordedTrackProxies(session: CarlaWorldSession, alignment: SceneAlignment, vehicle_geometries: Sequence[BlueprintGeometry], walker_geometries: Sequence[BlueprintGeometry])` | Maintain kinematic CARLA obstacles for recorded vehicle, rider and person tracks. |
+| `RecordedTrackProxies.missing: frozenset[str]` | Recorded tracks for which a proxy could not be created during this session. |
+| `RecordedTrackProxies.count: int` | Number of live proxies. |
+| `RecordedTrackProxies.sync(actors: Mapping[str, ActorState]) -> None` | Queue moves, remove disappeared tracks and spawn newly visible proxies. |
+| `RecordedTrackProxies.touching(world_from_box: ArrayLike, extent: ArrayLike) -> list[str]` | Return sorted track IDs whose proxy box overlaps or touches the given box from above. |
+| `RecordedTrackProxies.destroy_all() -> None` | Queue destruction of every live proxy. |
+<!-- api:end -->
+
+### avsectester.closed_loop.simulators.carla_nurec.simulator
+
+<!-- api:begin module=avsectester.closed_loop.simulators.carla_nurec.simulator -->
+CARLA ego dynamics and recorded obstacles in a NuRec reconstruction.
+
+| Name and signature | Meaning |
+|---|---|
+| `CarlaNuRecSimulator(renderer: Any, *, client: Mapping[str, Any], time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = "mesh", route_generator: str = "map", object_occlusion: str = "rendered_probes", object_insertion: str = "composite", occlusion_tolerance_m: float = 0.15, min_track_duration_s: float = 3.0, ego_blueprint: str \| None = None, settle_s: float = 1.0, tracker: TrajectoryTracker \| None = None, timeout_s: float = 60.0)` | Subclass of `NuRecSceneSimulator`. Use CARLA vehicle physics with NRE rendering and recorded traffic as solid obstacles. |
+| `CarlaNuRecSimulator.command_modes: frozenset[str]` | Accept CARLA actuator commands and rig-frame trajectories. |
+| `CarlaNuRecSimulator.timing_capabilities: TimingCapabilities` | Align NuRec timing to the CARLA physics tick. |
+| `CarlaNuRecSimulator.validate_start(start: ScenarioStart \| None) -> None` | Require recorded ego dimensions and an aligned, loadable OpenDRIVE map. |
+| `CarlaNuRecSimulator.identity: dict[str, Any]` | Record the scene, world settings and controller configuration for preparation. |
+| `CarlaNuRecSimulator.create_runtime(seed: int \| None = None) -> CarlaNuRecSimulatorRuntime` | Create a detached NRE renderer and CARLA runtime for one experiment run. |
+| `CarlaNuRecSimulatorRuntime(simulator: CarlaNuRecSimulator, seed: int \| None = None)` | Subclass of `NuRecSceneRuntime`. Render NuRec at physical CARLA poses and use recordings before the run origin. |
+| `CarlaNuRecSimulatorRuntime.world_key: tuple[str, str, int]` | Identify the native world so concurrent CARLA runtimes cannot change it. |
+| `CarlaNuRecSimulatorRuntime.termination_details: dict[str, Any]` | List any recorded tracks that could not be represented by a CARLA proxy. |
+| `CarlaNuRecSimulatorRuntime.interval_telemetry() -> dict[str, Any]` | List recorded tracks whose CARLA body box touched the ego body box in the interval. |
+| `CarlaNuRecSimulatorRuntime.close() -> None` | Destroy owned CARLA actors, restore asynchronous operation and close NRE. |
+<!-- api:end -->
 
 ### avsectester.closed_loop.simulators.ego_dynamics
 
@@ -2419,6 +2583,28 @@ propagates the original RPC error.
 
 [Simulators](../guides/simulators.md).
 
+### avsectester.closed_loop.simulators.nurec.scene
+
+<!-- api:begin module=avsectester.closed_loop.simulators.nurec.scene -->
+Shared NuRec scenery, rendering and motion reports.
+
+| Name and signature | Meaning |
+|---|---|
+| `EgoPropagation(motion: EgoMotion, pose: PlanarEgoState, world_from_ego: np.ndarray, poses: tuple[np.ndarray, ...] = ())` | The result of propagating the ego through one decision in scene coordinates. |
+| `NuRecSceneSimulator(renderer: Renderer, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = "mesh", route_generator: str = "map", object_occlusion: str = "rendered_probes", object_insertion: str = "composite", occlusion_tolerance_m: float = 0.15, min_track_duration_s: float = 3.)` | Subclass of `Simulator`. A NuRec scene and renderer configuration shared by the physics backends. |
+| `NuRecSceneSimulator.dataset_kinds = ("NuRecDataset",)` | Dataset kinds supported by this simulator. |
+| `NuRecSceneSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
+| `NuRecSceneSimulator.can_observe_past = True` | Whether observations before a selected start can be reconstructed. |
+| `NuRecSceneSimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
+| `NuRecSceneSimulator.validate_start_timing(start: ScenarioStart \| None, timing: TimingConfiguration) -> None` | Reject starts without enough source history for the selected LiDAR frame clock. |
+| `NuRecSceneSimulator.timing_capabilities: TimingCapabilities` | NuRec can render intermediate captures and report motion between decisions. |
+| `NuRecSceneSimulator.observation_lead_steps: int` | One recorded step supplies the start pose for a LiDAR scan, or zero without LiDAR. |
+| `NuRecSceneRuntime(simulator: NuRecSceneSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. The recorded scene, render connection and motion state shared by NuRec physics backends. |
+| `NuRecSceneRuntime.native: dict[str, Any]` | Native resources for explicit world changes or custom renderer operations. |
+| `NuRecSceneRuntime.render_request(camera: str) -> CameraPoseRequest` | Return the effective request that produced this camera's current observation. |
+| `NuRecSceneRuntime.set_actor_state(actor_id: str, state: ActorState) -> None` | Override a current reconstructed actor's pose and world velocity until reset. |
+<!-- api:end -->
+
 ### avsectester.closed_loop.simulators.nurec.server
 
 <!-- api:begin module=avsectester.closed_loop.simulators.nurec.server -->
@@ -2446,25 +2632,20 @@ added as notes to a propagating exception. They never raise.
 ### avsectester.closed_loop.simulators.nurec.simulator
 
 <!-- api:begin module=avsectester.closed_loop.simulators.nurec.simulator -->
-NuRec live worlds with independent renderer, actor state and ego dynamics.
+NuRec reconstruction with planar ego dynamics and optional reactive traffic.
 
 | Name and signature | Meaning |
 |---|---|
-| `NuRecSimulator(renderer: Renderer, dynamics: EgoDynamics \| None = None, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = "mesh", route_generator: str = "map", physics_update_mode: str = "ego_only", ground_mesh: str = "mesh", object_occlusion: str = "rendered_probes", object_insertion: str = "composite", occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.)` | Subclass of `Simulator`. A NuRec neural reconstruction with in-process ego dynamics and a pluggable renderer. |
-| `NuRecSimulator.dataset_kinds = ("NuRecDataset",)` | Dataset kinds supported by this simulator. |
-| `NuRecSimulator.can_render = True` | Whether arbitrary-view rendering is supported. |
-| `NuRecSimulator.can_observe_past = True` | Whether observations before a selected start can be reconstructed. |
-| `NuRecSimulator.can_insert_objects = True` | Whether world objects can be inserted into sensor rendering. |
-| `NuRecSimulator.validate_start_timing(start: ScenarioStart \| None, timing: TimingConfiguration) -> None` | Reject starts without enough source history for the selected LiDAR frame clock. |
+| `NuRecSimulator(renderer: Renderer, dynamics: EgoDynamics \| None = None, *, time_step: float \| None = None, camera_aliases: Mapping[str, str] \| None = None, depth: str = "mesh", route_generator: str = "map", physics_update_mode: str = "ego_only", ground_mesh: str = "mesh", object_occlusion: str = "rendered_probes", object_insertion: str = "composite", occlusion_tolerance_m: float = 0.15, traffic: AlpaSimTraffic \| None = None, min_track_duration_s: float = 3.)` | Subclass of `NuRecSceneSimulator`. A NuRec neural reconstruction with in-process ego dynamics and a pluggable renderer. |
 | `NuRecSimulator.create_runtime(seed: int \| None = None) -> NuRecSimulatorRuntime` | A new world. The optional traffic session receives seed for its log. |
-| `NuRecSimulator.timing_capabilities: TimingCapabilities` | NuRec can report intermediate motion using the configured ego dynamics. |
 | `NuRecSimulator.past_steps: int` | Recorded decision history needed by the optional traffic model. |
-| `NuRecSimulator.observation_lead_steps: int` | One recorded step supplies the start pose for a LiDAR scan, or zero without LiDAR. |
 | `NuRecSimulator.command_modes: frozenset[str] \| None` | Delegate command capabilities to the selected ego dynamics implementation. |
-| `NuRecSimulatorRuntime(simulator: NuRecSimulator, seed: int \| None = None)` | Subclass of `SimulatorRuntime`. One live NuRec world: the ego pose and dynamics loop, and its own renderer connection. |
-| `NuRecSimulatorRuntime.native: dict[str, Any]` | Native resources for explicit world changes or custom renderer operations. |
-| `NuRecSimulatorRuntime.render_request(camera: str) -> CameraPoseRequest` | Return the effective request that produced this camera's current observation. |
-| `NuRecSimulatorRuntime.set_actor_state(actor_id: str, state: ActorState) -> None` | Override a current reconstructed actor's pose and world velocity until reset. |
+| `NuRecSimulator.identity: Mapping[str, Any]` | Include compatible dynamics, ground contact and reactive traffic settings. |
+| `NuRecSimulatorRuntime(simulator: NuRecSimulator, seed: int \| None = None)` | Subclass of `NuRecSceneRuntime`. One live NuRec world with planar ego dynamics and its own renderer and traffic sessions. |
+| `NuRecSimulatorRuntime.native: dict[str, Any]` | Native renderer, dynamics and render requests for this runtime. |
+| `NuRecSimulatorRuntime.termination_details: dict[str, Any]` | Counts of unsuccessful ego ground contact updates by status. |
+| `NuRecSimulatorRuntime.set_actor_state(actor_id: str, state: ActorState) -> None` | Override an actor and backfill constant-velocity history in a reactive service request. |
+| `NuRecSimulatorRuntime.close() -> None` | Close the traffic session and the shared NuRec scene. |
 | `NuRecSimulatorRuntime.checkpoint() -> dict` | Capture a replay checkpoint. Active reactive-traffic sessions cannot be checkpointed. |
 | `NuRecSimulatorRuntime.restore(ckpt: dict) -> None` | Restore a saved replay checkpoint into this runtime. |
 <!-- api:end -->

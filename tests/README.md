@@ -72,7 +72,12 @@ tests/
           test_autoware.py
           test_conversions.py
           test_sensors.py
+          test_shared_connection.py
           test_simulator.py
+          test_trajectory_tracking.py
+        carla_nurec/
+          test_alignment.py
+          test_proxies.py
         nurec/
           __init__.py
           test_mesh_assets.py
@@ -116,6 +121,7 @@ tests/
       test_type_registry.py
     geometry/
       test_boxes.py
+      test_geodesy.py
       test_cameras.py
       test_mesh.py
       test_poses.py
@@ -138,6 +144,7 @@ tests/
         straight_stop.xodr
       test_clipgt.py
       test_opendrive.py
+      test_opendrive_validation.py
       test_scenario_map.py
     rendering/
       test_compositing.py

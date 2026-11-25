@@ -22,7 +22,9 @@ import numpy as np
 from avsectester.data_types import ActorState, Unavailable
 from avsectester.datasets.base import Dataset
 from avsectester.geometry.cameras import WindshieldDistortion
-from avsectester.geometry.poses import interpolate_transform, make_pose, quaternion_to_rotation
+from avsectester.geometry.poses import (
+    interpolate_transform, make_pose, quaternion_to_rotation, validated_transform,
+)
 from avsectester.maps.clipgt import read_clipgt
 
 if TYPE_CHECKING:
@@ -263,6 +265,24 @@ class NuRecDataset(Dataset):
     def usdz_path(self, scenario_id: str) -> str:
         """Return this scenario's source archive path without creating a simulator."""
         return self._path(scenario_id)
+
+    def opendrive(self, scenario_id: str) -> str | None:
+        """Read this scenario's OpenDRIVE map text, or return None if not supplied."""
+        with self.open_archive(self.usdz_path(scenario_id)) as archive:
+            try:
+                return archive.read("map.xodr").decode("utf-8")
+            except KeyError:
+                return None
+
+    def ecef_from_scene(self, scenario_id: str) -> np.ndarray:
+        """Read the rigid scene-to-ECEF transform or raise ValueError for missing or invalid data."""
+        rig = self._raw_metadata(self._path(scenario_id))["rig_trajectories.json"]
+        try:
+            return validated_transform(rig["T_world_base"])
+        except KeyError:
+            raise ValueError(f"NuRec scenario {scenario_id!r} has no T_world_base") from None
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(f"NuRec scenario {scenario_id!r} has an invalid T_world_base") from error
 
     def scene_mesh(self, scenario_id: str) -> tuple[np.ndarray, np.ndarray]:
         """Merge the static and ground PLY meshes in canonical scene-world coordinates."""

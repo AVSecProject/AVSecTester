@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from collections import deque
+from itertools import count
 from threading import Thread
 from time import monotonic, sleep, time_ns
 from types import ModuleType, SimpleNamespace
@@ -1082,6 +1083,8 @@ class CarlaActor:
         self.world, self.id, self.type_id = world, actor_id, vehicle
         self.transform = transform or CarlaTransform()
         self.velocity = CarlaVector()
+        self.angular_velocity = CarlaVector()
+        self.acceleration = CarlaVector()
         self.control = SimpleNamespace(throttle=0., brake=0., steer=0.)
         self.bounding_box = SimpleNamespace(extent=CarlaVector(2., 1., .7),
             location=CarlaVector(.2, 0., .7), rotation=SimpleNamespace(roll=0., pitch=0., yaw=0.))
@@ -1112,6 +1115,12 @@ class CarlaActor:
     def get_velocity(self):
         return self.velocity
 
+    def get_angular_velocity(self):
+        return self.angular_velocity
+
+    def get_acceleration(self):
+        return self.acceleration
+
     def set_transform(self, transform):
         self.world.actor_update(self, "set_transform")
         self.transform = transform
@@ -1122,6 +1131,7 @@ class CarlaActor:
 
     def set_target_angular_velocity(self, velocity):
         self.world.actor_update(self, "set_target_angular_velocity")
+        self.angular_velocity = velocity
 
     def set_simulate_physics(self, enabled):
         self.world.actor_update(self, "set_simulate_physics")
@@ -1145,6 +1155,15 @@ class CarlaActor:
         self.ros_enabled = True
 
     def get_physics_control(self):
+        if self.world.config.get("open_drive") and self.type_id.startswith("vehicle."):
+            pose = np.asarray(self.transform.get_matrix())
+            if len(self.physics.wheels) != 4:
+                self.physics.wheels = [SimpleNamespace(max_steer_angle=45. if x > 0 else 0.,
+                                                       friction_force_multiplier=2.)
+                                       for x in (1.3, 1.3, -1.3, -1.3)]
+            for wheel, point in zip(self.physics.wheels, ((1.3, -.7, .3), (1.3, .7, .3),
+                                                         (-1.3, -.7, .3), (-1.3, .7, .3))):
+                wheel.location = CarlaVector(*(pose[:3, :3] @ point + pose[:3, 3]))
         return self.physics
 
     def apply_physics_control(self, physics):
@@ -1350,10 +1369,14 @@ class CarlaBlueprint:
                         "fov", "sensor_tick", "mass", "mesh_path"}
 
 
+_CARLA_EPISODES = count(1)
+
+
 class CarlaWorld:
     def __init__(self, config, frame_offset=0, ground_height=None, ground_offset=(0., 0., 0.),
                  external_ego_throttle=None, ego_attribute_overrides=None, tick_callback=None,
-                 publish_tf=True, world_settings_overrides=None):
+                 publish_tf=True, world_settings_overrides=None, static_boxes=()):
+        self.id = next(_CARLA_EPISODES)
         self.frame, self.time = 0, 0.
         self.dt = 1 / config.get("rate", 10.)
         self.actors, self.vehicles = [], []
@@ -1368,11 +1391,14 @@ class CarlaWorld:
         self.tick_callback = tick_callback
         self.publish_tf = publish_tf
         self.world_settings_overrides = world_settings_overrides or {}
+        self.level_boxes = [SimpleNamespace(location=CarlaVector(*location), extent=CarlaVector(*extent))
+                            for location, extent in static_boxes]
         self.command_events = []
         self.direct_actor_updates = []
         self.destroyed_ids = []
         self.traffic_reset_pending = False
         self.applying_batch = False
+        self._settings = {}
 
     def actor_update(self, actor, operation):
         if not self.applying_batch:
@@ -1388,10 +1414,18 @@ class CarlaWorld:
                     "fixed_delta_seconds": self.dt,
                     "substepping": self.config.get("substepping", True),
                     "max_substep_delta_time": self.config.get("max_substep_delta_time", .01),
-                    "max_substeps": self.config.get("max_substeps", 10)}
+                    "max_substeps": self.config.get("max_substeps", 10),
+                    "deterministic_collisions": False, "no_rendering_mode": False}
+        settings.update(self._settings)
         return SimpleNamespace(**{
             name: self.world_settings_overrides.get(name, value) for name, value in settings.items()
         })
+
+    def apply_settings(self, settings):
+        self._settings = vars(settings).copy()
+        if settings.fixed_delta_seconds is not None:
+            self.dt = settings.fixed_delta_seconds
+        return self.frame
 
     def set_publish_tf(self, enabled):
         self.publish_tf = enabled
@@ -1404,6 +1438,8 @@ class CarlaWorld:
         self.frame += 1
         self.time += self.dt
         for actor in self.actors:
+            if self.config.get("open_drive") and (not actor.is_alive or not actor.simulate_physics):
+                continue
             if isinstance(actor, CarlaTrafficLight):
                 if self.traffic_reset_pending:
                     actor.set_state("Red")
@@ -1428,7 +1464,8 @@ class CarlaWorld:
                 actor.control = SimpleNamespace(
                     throttle=self.external_ego_throttle, brake=0., steer=0., hand_brake=False,
                     reverse=False, manual_gear_shift=False, gear=1)
-            speed = max(0., actor.velocity.x + (actor.control.throttle - actor.control.brake) * self.dt)
+            change = actor.control.throttle - actor.control.brake
+            speed = max(0., actor.velocity.x + change * self.dt)
             actor.velocity = CarlaVector(speed, actor.velocity.y, actor.velocity.z)
             actor.transform.location.x += speed * self.dt
         self.traffic_reset_pending = False
@@ -1454,23 +1491,48 @@ class CarlaWorld:
     def get_actors(self):
         return list(self.actors)
 
+    def get_level_bbs(self, label):
+        return list(self.level_boxes)
+
     def get_blueprint_library(self):
         vehicles = [SimpleNamespace(id="vehicle.a"), SimpleNamespace(id="vehicle.b")]
+        if self.config.get("open_drive"):
+            from fnmatch import fnmatch
+
+            blueprints = [CarlaBlueprint(item.id) for item in vehicles]
+            blueprints.append(CarlaBlueprint("walker.pedestrian.0001"))
+            return SimpleNamespace(filter=lambda pattern: [item for item in blueprints
+                                                          if fnmatch(item.id, pattern)],
+                                   find=CarlaBlueprint)
         return SimpleNamespace(filter=lambda pattern: (
             [CarlaBlueprint(pattern)] if pattern.startswith("static.prop") else vehicles),
             find=CarlaBlueprint)
 
-    def spawn_actor(self, blueprint, transform, attach_to=None, attachment_type=None):
+    def _spawn_candidate(self, blueprint, transform, attach_to=None):
         actor = CarlaActor(self, len(self.actors) + 1, blueprint.id, transform)
         actor.attributes = dict(getattr(blueprint, "attributes", {}))
         actor.attached_to = attach_to
+        return actor
+
+    def spawn_actor(self, blueprint, transform, attach_to=None, attachment_type=None):
+        actor = self._spawn_candidate(blueprint, transform, attach_to)
         self.actors.append(actor)
         return actor
 
     def try_spawn_actor(self, blueprint, transform):
-        actor = self.spawn_actor(blueprint, transform)
+        actor = self._spawn_candidate(blueprint, transform)
+        if self.level_boxes:
+            pose = np.asarray(transform.get_matrix())
+            box = actor.bounding_box
+            center = pose[:3, :3] @ (box.location.x, box.location.y, box.location.z) + pose[:3, 3]
+            extent = np.abs(pose[:3, :3]) @ (box.extent.x, box.extent.y, box.extent.z)
+            for static in self.level_boxes:
+                offset = center - (static.location.x, static.location.y, static.location.z)
+                if np.all(np.abs(offset) < extent + (static.extent.x, static.extent.y, static.extent.z)):
+                    return None
         if actor.type_id.startswith("vehicle."):
             actor.attributes.update(self.ego_attribute_overrides)
+        self.actors.append(actor)
         return actor
 
     def get_names_of_all_objects(self):
@@ -1488,7 +1550,8 @@ class CarlaWorld:
         self.weather = weather
 
     def get_map(self):
-        return SimpleNamespace(name=self.config.get("map_name", "Town03_Opt"))
+        return SimpleNamespace(name=self.config.get("map_name", "Town03_Opt"),
+                               get_spawn_points=lambda: [CarlaTransform()])
 
     def unload_map_layer(self, layer):
         self.layers.append(("unload", layer))
@@ -1503,6 +1566,7 @@ class CarlaNativeClient:
         if isinstance(map_name, str) and "/" in map_name:
             raise RuntimeError(f"Map not found: {map_name}")
         self.config = config
+        self.world_options = world_options
         self.world = CarlaWorld(config, **world_options)
         self.client = self
         self.command_error = None
@@ -1513,6 +1577,20 @@ class CarlaNativeClient:
     def scene_settings(self):
         name = self.config.get("map_name")
         return {"map_name": f"Carla/Maps/{name.rsplit('/', 1)[-1]}"} if name else {}
+
+    def set_timeout(self, value):
+        self.timeout = value
+
+    def get_world(self):
+        return self.world
+
+    def get_server_version(self):
+        return "fake-carla-1.0"
+
+    def generate_opendrive_world(self, xodr, parameters):
+        self.xodr = xodr
+        self.world = CarlaWorld({**self.config, "open_drive": True}, **self.world_options)
+        return self.world
 
     def tick(self):
         return self.world.tick()
@@ -1628,14 +1706,16 @@ class CarlaNativeBoundary:
 
     def __init__(self, frame_offset=0, include_rgb=True, ground_height=None, *, ground_offset=(0., 0., 0.),
                  external_ego_throttle=None, ego_attribute_overrides=None, tick_callback=None,
-                 batch_callback=None, publish_tf=True, world_settings_overrides=None):
+                 batch_callback=None, publish_tf=True, world_settings_overrides=None, static_boxes=()):
         self.include_rgb = include_rgb
+        self.native_client = None
         self.batch_callback = batch_callback
         self.world_options = dict(frame_offset=frame_offset, ground_height=ground_height,
                                   ground_offset=ground_offset, external_ego_throttle=external_ego_throttle,
                                   ego_attribute_overrides=ego_attribute_overrides,
                                   tick_callback=tick_callback, publish_tf=publish_tf,
-                                  world_settings_overrides=world_settings_overrides)
+                                  world_settings_overrides=world_settings_overrides,
+                                  static_boxes=static_boxes)
         self.module_dict = {"CarlaMobileActor": CarlaMobileActor, "CarlaRgbCamera": CarlaNativeSensor,
                             "CarlaLidar": CarlaNativeSensor}
 
@@ -1662,6 +1742,32 @@ class CarlaNativeBoundary:
             return self.module_dict[config["type"]](**default_args, **options)
         return CarlaMobileActor(default_args["client"], config, self.include_rgb)
 
+    def connect_native(self, host, port):
+        previous = self.native_client
+        self.native_client = CarlaNativeClient({"connect_ip": host, "connect_port": port,
+                                                "synchronous": False, "open_drive": True},
+                                               batch_callback=self.batch_callback,
+                                               **self.world_options)
+        if previous is not None and previous.config["connect_port"] == port:
+            # The server keeps its active world across client connections.
+            self.native_client.world = previous.world
+        return self.native_client
+
+    def install_opendrive_parser(self, monkeypatch, error=None, returncode=None):
+        """Replace the native parser process used for isolated map checks.
+
+        An error message without a return code is a map rejection.
+        """
+        import subprocess
+
+        import avsectester.maps.opendrive as opendrive
+
+        code = returncode if returncode is not None else (0 if error is None else 2)
+        monkeypatch.setattr(opendrive, "subprocess", SimpleNamespace(
+            TimeoutExpired=subprocess.TimeoutExpired,
+            run=lambda args, **options: subprocess.CompletedProcess(
+                args, code, stdout=b"", stderr=(error or "").encode())))
+
     def install(self, monkeypatch, rgb_camera=None):
         if rgb_camera is not None:
             self.module_dict["CarlaRgbCamera"] = rgb_camera
@@ -1669,6 +1775,9 @@ class CarlaNativeBoundary:
         carla.Vector3D = carla.Location = CarlaVector
         carla.LidarMeasurement = CarlaLidarCapture
         carla.Transform = CarlaTransform
+        carla.Client = self.connect_native
+        carla.OpendriveGenerationParameters = lambda **settings: SimpleNamespace(**settings)
+        carla.CityObjectLabel = SimpleNamespace(Any=255)
         carla.Rotation = lambda **values: SimpleNamespace(**values)
         carla.TextureColor = carla.TextureFloatColor = CarlaTexture
         carla.Color = carla.FloatColor = lambda r, g, b, a: (r, g, b, a)
@@ -1685,7 +1794,8 @@ class CarlaNativeBoundary:
             "ApplyTargetAngularVelocity": "set_target_angular_velocity",
             "SetSimulatePhysics": "set_simulate_physics", "SetEnableGravity": "set_enable_gravity",
             "ApplyVehicleControl": "apply_control", "SetAutopilot": "set_autopilot",
-            "ApplyVehiclePhysicsControl": "apply_physics_control", "SetVehicleLightState": "set_light_state"}
+            "ApplyVehiclePhysicsControl": "apply_physics_control", "SetVehicleLightState": "set_light_state",
+            "DestroyActor": "destroy"}
         carla.command = SimpleNamespace(**{name: (lambda actor_id, *arguments, method=method:
             SimpleNamespace(actor_id=actor_id, method=method, arguments=arguments))
             for name, method in methods.items()})

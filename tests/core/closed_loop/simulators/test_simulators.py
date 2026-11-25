@@ -1,18 +1,23 @@
 """Simulator components share one calibrated capture and world-object contract."""
 
+from dataclasses import replace
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
 
-from avsectester.closed_loop.simulators.base import Initialization
+from avsectester.closed_loop.simulators.base import Initialization, UnsupportedStartError
 from avsectester.closed_loop.simulators.carla import CarlaSimulator
+from avsectester.closed_loop.simulators.carla.trajectory_tracking import TrajectoryTracker
+from avsectester.closed_loop.simulators.carla_nurec import CarlaNuRecSimulator
 from avsectester.closed_loop.simulators.nurec import NuRecRenderer, NuRecSimulator
 from avsectester.closed_loop.simulators.recorded import RecordedReplaySimulator
+from avsectester.closed_loop.timing import SensorTiming, TimingConfiguration
 from avsectester.execution.services import ClosedLoopServices, RenderRequest, SensorRequest
 from avsectester.geometry.cameras import BODY_FROM_OPTICAL
 from avsectester.data_types import Control
-from tests.fakes import CarlaNativeBoundary, NuRecRpcBoundary
+from tests.fakes import CarlaNativeBoundary, CarlaVector, NuRecRpcBoundary
 
 
 @pytest.fixture
@@ -43,6 +48,21 @@ def nurec_case(nurec_dataset, monkeypatch):
 
 
 @pytest.fixture
+def carla_nurec_case(nurec_dataset, monkeypatch):
+    boundary = CarlaNativeBoundary().install(monkeypatch)
+    boundary.install_opendrive_parser(monkeypatch)
+    NuRecRpcBoundary().install(monkeypatch)
+    simulator = CarlaNuRecSimulator(NuRecRenderer(cameras=["front"]), client={"rate": 20},
+                                    object_occlusion="geometry", time_step=.1,
+                                    min_track_duration_s=0., settle_s=.1)
+    frames = nurec_dataset.frames("scene")
+    start = nurec_dataset.scenario_start("scene", frames[1])
+    initial = nurec_dataset.scenario_start("scene", frames[0])
+    return SimpleNamespace(dataset=nurec_dataset, simulator=simulator, start=start, boundary=boundary,
+                           initialization=None, shape=(12, 16, 3), initial=initial, initial_state=None)
+
+
+@pytest.fixture
 def recorded_case(nuscenes_dataset):
     simulator = RecordedReplaySimulator(camera_aliases={"CAM_FRONT": "front"})
     start = nuscenes_dataset.scenario_start("scene", nuscenes_dataset.frames("scene")[1])
@@ -51,7 +71,7 @@ def recorded_case(nuscenes_dataset):
                            initialization=None, shape=(80, 100, 3), initial=initial, initial_state=None)
 
 
-@pytest.fixture(params=["carla_case", "nurec_case", "recorded_case"])
+@pytest.fixture(params=["carla_case", "nurec_case", "recorded_case", "carla_nurec_case"])
 def simulator_case(request):
     return request.getfixturevalue(request.param)
 
@@ -163,6 +183,178 @@ def test_read_sensors_views(simulator_case, assert_camera_views_equal):
             with services.session(3) as session:
                 rendered = session.render(RenderRequest(start.scenario_id, sample.frame, "front"))
             assert_camera_views_equal(sample.views["front"], rendered.view)
+
+
+def test_carla_nurec_reset_and_native_step(carla_nurec_case):
+    case = carla_nurec_case
+    with case.simulator.create_runtime() as runtime:
+        runtime.reset(case.start)
+        world = case.boundary.native_client.get_world()
+        initial = runtime.state().ego.pose
+        np.testing.assert_allclose(initial, case.start.payload["ego"].pose)
+        assert runtime.initialization_report["proxy_count"] == 1
+        assert runtime.initialization_report["missing_proxies"] == []
+        assert world.get_settings().deterministic_collisions
+        assert runtime.initialization_report["ego_geometry"]["rear_axle_x"] == pytest.approx(-1.3)
+        trajectory = Control(trajectory=[((0., 0., 0.), (1., 0., 0., 0.), 0),
+                                         ((1., .3, 0.), (1., 0., 0., 0.), 100000)])
+        runtime.advance_interval(100000, trajectory, report_times_us=(50000,))
+        runtime.capture_at(50000)
+        middle = runtime.state().ego.pose
+        runtime.capture_at(100000)
+        assert initial[0, 3] < middle[0, 3] < runtime.state().ego.pose[0, 3]
+        proxy = next(actor for actor in world.get_actors()
+                     if actor.type_id.startswith("vehicle.") and actor.is_alive and not actor.simulate_physics)
+        ego = next(actor for actor in world.get_actors()
+                   if actor.type_id.startswith("vehicle.") and actor.is_alive and actor.simulate_physics)
+        assert ego.control.steer < 0. and ego.control.throttle > 0.
+        assert proxy.get_transform().location.x > 7.
+    assert not any(actor.is_alive for actor in (proxy, ego))
+    assert not world.get_settings().synchronous_mode
+
+
+def test_carla_nurec_force_gt_handoff(carla_nurec_case):
+    case = carla_nurec_case
+    with case.simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(force_gt_duration_us=100000))
+        runtime.reset(case.start, closed_loop_run=True)
+        world = case.boundary.native_client.get_world()
+        runtime.advance_interval(100000, Control(throttle=1.), force_gt=True)
+        runtime.capture_at(100000)
+        time_us = round(case.start.frame.timestamp * 1e6) + 100000
+        recorded = case.dataset.ego_state(case.start.scenario_id, time_us)
+        np.testing.assert_allclose(runtime.state().ego.pose, recorded.pose)
+        assert not any(actor.simulate_physics for actor in world.get_actors()
+                       if actor.is_alive and actor.type_id.startswith("vehicle."))
+        runtime.advance_interval(200000, Control(throttle=1.), coerce_dynamic_state=True)
+        runtime.capture_at(200000)
+        ego = next(actor for actor in world.get_actors()
+                   if actor.is_alive and actor.type_id.startswith("vehicle.") and actor.simulate_physics)
+        assert ego.velocity.x > recorded.velocity[0]
+
+
+def test_carla_nurec_brakes_fully_for_empty_trajectory(carla_nurec_case):
+    case = carla_nurec_case
+    simulator = CarlaNuRecSimulator(
+        case.simulator.renderer, client={"rate": 20}, time_step=.1,
+        object_occlusion="geometry", tracker=TrajectoryTracker(hold_brake=.25),
+    )
+    with simulator.create_runtime() as runtime:
+        runtime.reset(case.start)
+        runtime.step(Control(trajectory=[]))
+        world = case.boundary.native_client.get_world()
+        ego = next(actor for actor in world.get_actors()
+                   if actor.is_alive and actor.type_id.startswith("vehicle.") and actor.simulate_physics)
+        assert ego.control.brake == 1. and ego.control.throttle == 0.
+
+
+def test_carla_nurec_reports_proxy_body_contacts_per_interval(carla_nurec_case):
+    case = carla_nurec_case
+    with case.simulator.create_runtime() as runtime:
+        runtime.reset(case.start)
+        state = runtime.state()
+        (track, actor), = state.actors.items()
+        runtime.set_actor_state(track, replace(actor, pose=state.ego.pose, velocity=(0., 0., 0.)))
+        runtime.advance_interval(100000, Control(brake=1.))
+        runtime.capture_at(100000)
+        assert runtime.interval_telemetry() == {"collisions": [track]}
+        ahead = state.ego.pose.copy()
+        ahead[:3, 3] += 50. * ahead[:3, 0]
+        runtime.set_actor_state(track, replace(actor, pose=ahead, velocity=(0., 0., 0.)))
+        runtime.advance_interval(200000, Control(brake=1.))
+        runtime.capture_at(200000)
+        assert runtime.interval_telemetry() == {"collisions": []}
+
+
+def test_carla_nurec_reports_reverse_motion_as_nonnegative_speed(nurec_dataset, monkeypatch):
+    def roll_back():
+        # A collision rebound leaves the physical ego moving backward after the tick.
+        for vehicle in boundary.native_client.world.get_actors():
+            if vehicle.is_alive and vehicle.type_id.startswith("vehicle.") and vehicle.simulate_physics:
+                forward = np.asarray(vehicle.get_transform().get_matrix())[:3, 0]
+                vehicle.velocity = CarlaVector(*(-2. * forward))
+
+    boundary = CarlaNativeBoundary(tick_callback=roll_back).install(monkeypatch)
+    boundary.install_opendrive_parser(monkeypatch)
+    NuRecRpcBoundary().install(monkeypatch)
+    simulator = CarlaNuRecSimulator(NuRecRenderer(cameras=["front"]), client={"rate": 20},
+                                    time_step=.1, min_track_duration_s=0., settle_s=.1)
+    start = nurec_dataset.scenario_start("scene", nurec_dataset.frames("scene")[1])
+    with simulator.create_runtime() as runtime:
+        runtime.reset(start)
+        runtime.step(Control(throttle=.1))
+        state = runtime.state()
+        assert state.vehicle_state.speed == pytest.approx(-2.)
+        assert state.ego_speed == pytest.approx(2.)
+        assert runtime.observe().ego_speed == pytest.approx(2.)
+
+
+def test_carla_nurec_retains_slower_camera_pose_for_trajectory(carla_nurec_case):
+    case = carla_nurec_case
+    with case.simulator.create_runtime() as runtime:
+        runtime.configure_timing(TimingConfiguration(sensors={"front": SensorTiming(frame_interval_us=500000)}))
+        runtime.reset(case.initial)
+        for time_us in range(100000, 500000, 100000):
+            runtime.advance_interval(time_us, Control(throttle=.1))
+            runtime.capture_at(time_us, ())
+        trajectory = Control(trajectory=[((0., 0., 0.), (1., 0., 0., 0.), 0),
+                                         ((2., 0., 0.), (1., 0., 0., 0.), 500000)])
+        runtime.step(trajectory)
+        assert runtime.clock.time_us == 500000
+
+
+@pytest.mark.parametrize("bad_origin,error,match", [
+    (True, None, "geoReference"),
+    (False, "parser refused this map", "parser refused this map"),
+])
+def test_carla_nurec_rejects_unusable_maps(carla_nurec_case, tmp_path, monkeypatch,
+                                         bad_origin, error, match):
+    case = carla_nurec_case
+    archive_path = tmp_path / "bad-map.usdz"
+    with ZipFile(case.start.payload["usdz_path"]) as source, ZipFile(archive_path, "w") as result:
+        for name in source.namelist():
+            data = source.read(name)
+            if name == "map.xodr":
+                if bad_origin:
+                    data = data.replace(b"+=alt_0=0", b"")
+                else:
+                    data += b"\n<!-- rejected parser input -->\n"
+            result.writestr(name, data)
+    case.boundary.install_opendrive_parser(monkeypatch, error)
+    start = replace(case.start, payload={**case.start.payload, "usdz_path": archive_path})
+    with pytest.raises(UnsupportedStartError, match=match):
+        case.simulator.validate_start(start)
+
+
+def test_carla_nurec_reports_map_check_failures(carla_nurec_case, tmp_path, monkeypatch):
+    case = carla_nurec_case
+    archive_path = tmp_path / "unchecked-map.usdz"
+    with ZipFile(case.start.payload["usdz_path"]) as source, ZipFile(archive_path, "w") as result:
+        for name in source.namelist():
+            data = source.read(name)
+            result.writestr(name, data + b"\n<!-- unchecked parser input -->\n" if name == "map.xodr" else data)
+    case.boundary.install_opendrive_parser(
+        monkeypatch, "ModuleNotFoundError: No module named 'carla'", returncode=3)
+    start = replace(case.start, payload={**case.start.payload, "usdz_path": archive_path})
+    with pytest.raises(RuntimeError, match="CARLA Python client"):
+        case.simulator.validate_start(start)
+
+
+def test_carla_nurec_reuses_validated_archive_map_for_reset(carla_nurec_case, monkeypatch):
+    case = carla_nurec_case
+    reads = []
+    read = ZipFile.read
+
+    def read_archive(archive, name, *args, **kwargs):
+        if name == "map.xodr":
+            reads.append(archive.filename)
+        return read(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(ZipFile, "read", read_archive)
+    case.simulator.validate_start(case.start)
+    with case.simulator.create_runtime() as runtime:
+        runtime.reset(case.start)
+    assert reads == [str(case.start.payload["usdz_path"])]
 
 
 @pytest.mark.parametrize("simulator_case", ["carla_case", "recorded_case"], indirect=True)

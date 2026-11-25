@@ -115,7 +115,8 @@ class Control:
 
     The *physical* response to the command (vehicle dynamics) is the simulator's shared job, so the
     simulator must support the command representation produced by the AVStack. Actuator commands use
-    ``throttle``, ``steer`` and ``brake``. Trajectory commands use ``trajectory`` in the selected
+    ``throttle``, ``steer`` and ``brake``. Steering is in [-1, 1], with positive values turning
+    right, as in CARLA. Trajectory commands use ``trajectory`` in the selected
     adapter's coordinates and time convention. Built-in simulators reject unsupported fields.
     """
 

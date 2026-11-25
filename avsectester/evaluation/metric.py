@@ -174,7 +174,8 @@ def _actors_and_inserted_objects(snapshot: WorldSnapshot) -> Iterator[tuple[str,
 class DrivingMetrics(Metric):
     """Physical speed, actuator braking, and top-down box distance and collision with other objects.
 
-    Other objects are recorded actors and inserted world objects.
+    Other objects are recorded actors and inserted world objects. A collision that the simulator
+    reports in ``telemetry["collisions"]`` also counts.
     """
 
     def __init__(self, stop_speed: float = DEFAULT_STOP_SPEED_MPS) -> None:
@@ -184,7 +185,8 @@ class DrivingMetrics(Metric):
     def describe(self) -> MetricDescription:
         return MetricDescription(
             "Ego speed after each decision, actuator braking, and top-down bounding-box distance "
-            "and collision with recorded actors and inserted world objects.",
+            "and collision with recorded actors and inserted world objects, including collisions "
+            "the simulator reports.",
             {
                 "final_speed": MetricField("Speed after the last decision.", "m/s"),
                 "peak_speed": MetricField("Highest speed after any decision.", "m/s"),
@@ -200,8 +202,9 @@ class DrivingMetrics(Metric):
                     "missing and no overlap was recorded.", "m"),
                 "collision": MetricField(
                     "The ego bounding box overlapped or touched a recorded actor or inserted world object "
-                    "in top-down view at some recorded state. True exactly when min_distance is zero. "
-                    "Unavailable if a participating pose or extent is missing and no overlap was recorded."),
+                    "in top-down view at some recorded state, or the simulator reported a collision in "
+                    "step telemetry. Unavailable if a participating pose or extent is missing and no "
+                    "collision was recorded."),
             },
         )
 
@@ -221,7 +224,7 @@ class DrivingMetrics(Metric):
             values["brake_steps"] = count if count is not None else UnavailableMetricValue(
                 "Executed actuator commands are unavailable")
             distances = []
-            missing_geometry, collision = False, False
+            missing_geometry, overlap = False, False
             states = [state for step in log.steps for state in (step.physical_pre, step.physical_post)]
             if not states:
                 missing_geometry = True
@@ -238,14 +241,16 @@ class DrivingMetrics(Metric):
                     ego_box, actor_box = ego.box_transform(), actor.box_transform()
                     distance = oriented_boxes_distance(ego_box, ego.extent, actor_box, actor.extent)
                     distances.append(distance)
-                    collision |= distance == 0.
-            # A recorded overlap fixes both fields even when other geometry is missing.
-            known = collision or not missing_geometry
+                    overlap |= distance == 0.
+            # A recorded overlap fixes the distance, and any recorded collision fixes the collision
+            # field, even when other geometry is missing.
+            collision = overlap or any(step.telemetry.get("collisions") for step in log.steps)
             reason = "Ego, recorded actor or inserted world object poses or bounding-box extents are missing"
-            values["min_distance"] = (min(distances) if distances and known
+            values["min_distance"] = (min(distances) if distances and (overlap or not missing_geometry)
                 else UnavailableMetricValue(reason if missing_geometry
                     else "No other recorded actor or inserted world object was recorded"))
-            values["collision"] = collision if known else UnavailableMetricValue(reason, "boolean")
+            values["collision"] = (collision if collision or not missing_geometry
+                                   else UnavailableMetricValue(reason, "boolean"))
             result[name] = values
         return result
 

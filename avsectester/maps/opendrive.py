@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import replace
+from hashlib import sha256
+import math
+import signal
+import subprocess
+import sys
 from typing import Any, Literal
 import xml.etree.ElementTree as ET
 
@@ -11,6 +16,7 @@ import numpy as np
 
 from avsectester.data_types import Unavailable
 from avsectester.geometry.poses import mirror_y_points, mirror_y_transform
+from avsectester.validation import require_positive_number
 
 from .scenario_map import Lane, ScenarioMap, STOP_LINE_KIND_BY_CONTROL_KIND, StopLine, TrafficControl
 
@@ -21,6 +27,111 @@ _LANE_TYPES: dict[str, Literal["driving", "shoulder", "bike", "parking", "other"
 _CONTROL_KINDS: dict[str, Literal["stop_sign", "yield_sign", "speed_limit", "traffic_light", "other"]] = {
     "206": "stop_sign", "205": "yield_sign", "274": "speed_limit", "1000001": "traffic_light",
 }
+_CHECKED_OPENDRIVE: dict[bytes, str | None] = {}
+_MAP_REJECTED = 2
+_CLIENT_UNAVAILABLE = 3
+_PARSER_CRASHES = frozenset(getattr(signal, name) for name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGFPE")
+                            if hasattr(signal, name))
+_CHECK_OPENDRIVE_CODE = f"""
+import sys
+
+if sys.platform != "win32":
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+try:
+    import carla
+except ImportError as error:
+    print(f"{{type(error).__name__}}: {{error}}", file=sys.stderr)
+    sys.exit({_CLIENT_UNAVAILABLE})
+
+try:
+    carla.Map("OpenDRIVE", sys.stdin.buffer.read().decode("utf-8"))
+except RuntimeError as error:
+    print(error, file=sys.stderr)
+    sys.exit({_MAP_REJECTED})
+"""
+
+
+def opendrive_geo_origin(xodr: str) -> tuple[float, float, float] | None:
+    """Return latitude, longitude and altitude from the map header, or None if unavailable.
+
+    Coordinates use degrees and meters. Both `+alt_0=` and the NuRec variant `+=alt_0=`
+    supply altitude. An invalid XML document or incomplete geographic origin returns None.
+    """
+    try:
+        reference = ET.fromstring(xodr).findtext("./header/geoReference", "")
+    except ET.ParseError:
+        return None
+    keys = {"+lat_0", "+lon_0", "+alt_0", "+=alt_0"}
+    origin: dict[str, float] = {}
+    for token in reference.split():
+        key, separator, value = token.rpartition("=")
+        if not separator or key not in keys:
+            continue
+        key = "+alt_0" if key == "+=alt_0" else key
+        if key in origin:
+            return None
+        try:
+            origin[key] = float(value)
+        except ValueError:
+            return None
+    if len(origin) != 3 or not all(math.isfinite(v) for v in origin.values()):
+        return None
+    latitude, longitude, altitude = origin["+lat_0"], origin["+lon_0"], origin["+alt_0"]
+    if abs(latitude) > 90. or abs(longitude) > 180.:
+        return None
+    return latitude, longitude, altitude
+
+
+def _signal_name(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return str(signum)
+
+
+def check_opendrive(xodr: str, timeout_s: float) -> str | None:
+    """Return CARLA's reason for rejecting an OpenDRIVE map, or None when the map loads.
+
+    A child process of the current Python environment parses the map, so a parser crash cannot
+    stop the caller. A rejection or a parser crash returns a reason. A timeout, a missing CARLA
+    client or any other child failure raises ``RuntimeError``. Only map outcomes are cached, by
+    map content, in the current process.
+    """
+    if not isinstance(xodr, str) or not xodr.strip():
+        raise ValueError("OpenDRIVE text must be a nonempty string")
+    require_positive_number(timeout_s, "timeout_s")
+    payload = xodr.encode("utf-8")
+    digest = sha256(payload).digest()
+    if digest in _CHECKED_OPENDRIVE:
+        return _CHECKED_OPENDRIVE[digest]
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _CHECK_OPENDRIVE_CODE], input=payload,
+            capture_output=True, check=False, timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"OpenDRIVE validation timed out after {timeout_s:g} seconds") from error
+    except OSError as error:
+        raise RuntimeError(f"Could not start the OpenDRIVE parser: {error}") from error
+
+    diagnostic = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+    last_line = diagnostic.splitlines()[-1] if diagnostic else f"exit status {result.returncode}"
+    if result.returncode == 0:
+        reason = None
+    elif result.returncode == _MAP_REJECTED:
+        reason = f"OpenDRIVE parser rejected the map: {last_line}"
+    elif -result.returncode in _PARSER_CRASHES:
+        reason = f"OpenDRIVE parser crashed with {_signal_name(-result.returncode)}"
+    elif result.returncode == _CLIENT_UNAVAILABLE:
+        raise RuntimeError(f"The OpenDRIVE check needs the CARLA Python client: {last_line}")
+    elif result.returncode < 0:
+        raise RuntimeError(f"OpenDRIVE parser stopped by {_signal_name(-result.returncode)}")
+    else:
+        raise RuntimeError(f"OpenDRIVE parser failed: {last_line}")
+    _CHECKED_OPENDRIVE[digest] = reason
+    return reason
 
 
 def _convex_hull(points: np.ndarray) -> np.ndarray:
@@ -354,5 +465,7 @@ def read_opendrive(xodr_text: str, *, name: str) -> ScenarioMap | Unavailable:
 
 
 __all__ = [
+    'check_opendrive',
+    'opendrive_geo_origin',
     'read_opendrive',
 ]

@@ -157,7 +157,7 @@ class KinematicBicycle:
         require_positive_number(dt, "dt")
         accel = control.throttle * self.max_accel - control.brake * self.max_brake
         speed = max(0.0, pose.speed + accel * dt)
-        steer = control.steer * self.max_steer
+        steer = -control.steer * self.max_steer
         yaw = pose.yaw + (speed / self.wheelbase) * math.tan(steer) * dt
         return PlanarEgoState(
             x=pose.x + speed * math.cos(yaw) * dt,
