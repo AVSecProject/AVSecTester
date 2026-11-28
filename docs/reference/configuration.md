@@ -247,7 +247,7 @@ This fragment keeps the decision grid at 100 ms and configures independent camer
 clocks.
 
 **Not yet implemented.** Camera phase from the recording. See
-[Recorded camera phase](../development/TODO.md#recorded-camera-phase).
+[Recorded camera phase](../development/TODO.md#simulators).
 
 ## Simulator
 
@@ -545,10 +545,10 @@ including a model's ground clearance, and vertices below z = 0 are rejected.
 Supplying `color` for an already colored file is an error.
 
 **Not yet implemented.** FBX and USD loading. See
-[TODO](../development/TODO.md#fbx-and-usd-assets).
+[TODO](../development/TODO.md#simulators).
 
 **Not yet implemented.** 3DGS Gaussian PLY assets. See
-[TODO](../development/TODO.md#gaussian-assets).
+[TODO](../development/TODO.md#simulators).
 
 ## Driving specification
 

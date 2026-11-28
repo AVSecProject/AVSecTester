@@ -69,7 +69,7 @@ The CARLA mesh requires the mounted AdditionalMaps pack on both maps, including 
 See [CARLA map packs](../getting-started/installation.md#carla-map-packs).
 
 Scaling a CARLA prop mesh to arbitrary requested panel dimensions is **Not yet implemented.**
-See [CARLA physical patches](../development/TODO.md#carla-physical-patches).
+See [CARLA physical patches](../development/TODO.md#attacks-and-optimization).
 
 ## Evidence
 

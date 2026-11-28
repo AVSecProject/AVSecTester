@@ -69,10 +69,10 @@ Alpha values of at least 128 are opaque. Mesh triangles used to occlude sensor-i
 are treated as opaque regardless of their color alpha.
 
 **Not yet implemented.** Mesh composite insertion, including white-box texture optimization.
-See [TODO](../development/TODO.md#mesh-composite-insertion).
+See [TODO](../development/TODO.md#simulators).
 
 **Not yet implemented.** CARLA mesh insertion. See
-[TODO](../development/TODO.md#carla-mesh-insertion).
+[TODO](../development/TODO.md#simulators).
 
 Composite insertion projects each asset into captured camera images, resolves nearest surfaces
 and applies visibility. NuRec also supports scene insertion, where NRE renders assets with the
@@ -118,7 +118,7 @@ See [Writing attacks](attacks.md#insert-a-world-object) for insertion actions an
 [Runtime records](../reference/runtime.md#runlog) for saved evidence.
 
 **Not yet implemented.** CARLA scene insertion and non-camera insertion in composite mode.
-See [TODO](../development/TODO.md#inserted-objects-in-non-camera-sensors).
+See [TODO](../development/TODO.md#simulators).
 
 ## CARLA
 
@@ -188,7 +188,7 @@ reason. When a run has a prepared initialization, its actual ego pose and veloci
 match the prepared values.
 
 **Not yet implemented.** Starting after the origin. See
-[TODO](../development/TODO.md#native-ros-2-runs-after-the-origin).
+[TODO](../development/TODO.md#driving-systems).
 
 Enable publication of external control commands only during execution. Preparation and rendering can
 reset the world repeatedly. CARLA continues publishing ROS messages, so subscribers see clock jumps
@@ -240,7 +240,7 @@ Follow the [Hosted Autoware example](../examples/hosted-autoware.md) to run this
 
 **Not yet implemented.** Hosted Autoware maps for other towns and camera fusion, including
 modification of camera topics. See
-[TODO](../development/TODO.md#apollo-and-autoware-driving-systems).
+[TODO](../development/TODO.md#driving-systems).
 
 #### Hosted ROS topics
 
@@ -371,7 +371,7 @@ Reconstructed objects remain in the scene and can hide an inserted object placed
 to them.
 
 **Not yet implemented.** Removing real objects from reconstructed scenes. See
-[TODO](../development/TODO.md#remove-real-objects-from-reconstructed-scenes).
+[TODO](../development/TODO.md#simulators).
 
 Scene-inserted assets appear in LiDAR for 26.04 scenes. In 26.01 scenes, LiDAR can pass through
 inserted assets. This is a limitation of that scene release.
@@ -408,12 +408,12 @@ Reconstructed-scene defects may produce a small number of below-ground points in
 Supplied scenes provide no intensity.
 
 **Not yet implemented.** Intensity and no-return-ray simulation. See
-[NuRec LiDAR simulation](../development/TODO.md#nurec-lidar-simulation).
+[NuRec LiDAR simulation](../development/TODO.md#simulators).
 Inserted objects appear in LiDAR with [scene insertion](#scene-insertion). Composite insertion
 changes camera images only.
 
 **Not yet implemented.** Offline renders of a dataset's first frame while LiDAR is enabled. See
-[TODO](../development/TODO.md#nurec-offline-lidar-sampling).
+[TODO](../development/TODO.md#simulators).
 
 ### Recorded past observations
 
@@ -494,7 +494,7 @@ explicit world velocity advances the actor at fixed orientation until reset or a
 overrides. Restoring a checkpoint creates a new capture of the restored state.
 
 **Not yet implemented.** Checkpoint restoration with active render hooks. See
-[TODO](../development/TODO.md#nurec-checkpoint-restoration-with-active-render-hooks).
+[TODO](../development/TODO.md#simulators).
 
 ### Reactive traffic
 
@@ -511,7 +511,7 @@ Trajectories are not smoothed. Offline candidate rollouts also require the servi
 
 **Not yet implemented.** Fitting traffic actors to the selected ground mesh, checkpointing
 traffic sessions and controlling CATK sampling through the run seed. See
-[Reactive traffic](../development/TODO.md#reactive-traffic).
+[Reactive traffic](../development/TODO.md#simulators).
 
 ### Ego dynamics
 
