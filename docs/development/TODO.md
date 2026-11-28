@@ -41,6 +41,7 @@ owns them. Other documents link to these component sections.
 ## Evaluation
 
 - [ ] **Leaderboard!**
+- [ ] **Cross-layer diagnosis.** How attack signals propagate through the system stack?
 - [ ] **External benchmark integrations.**
 
 ## Defenses
