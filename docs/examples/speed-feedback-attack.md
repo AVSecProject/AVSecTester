@@ -43,7 +43,7 @@ alter those inputs. Driving-system inputs are described in
 [Driving systems](../guides/driving-systems.md).
 
 Feedback driven by another actor's perception history is **Not yet implemented.** See
-[Actor-aware adaptive attack](../development/TODO.md#attacks-and-optimization).
+[Actor-aware adaptive attack](../development/TODO.md#attacks).
 
 ## Evidence
 

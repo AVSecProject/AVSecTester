@@ -108,7 +108,7 @@ The [Simulator guide](simulators.md#inserted-world-objects) describes these view
 Plans fix object geometry, so gradients reach surface colors only.
 
 **Not yet implemented.** Shape optimization. See
-[TODO](../development/TODO.md#attacks-and-optimization).
+[TODO](../development/TODO.md#attacks).
 
 Differentiable harmonizers use the same floating-point computation during optimization and
 deployment, followed by uint8 rounding for deployment. This example checks that equivalence and
